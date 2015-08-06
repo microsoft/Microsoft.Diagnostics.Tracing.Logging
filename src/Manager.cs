@@ -439,7 +439,6 @@ namespace Microsoft.Diagnostics.Tracing.Logging
 
             this.CreateConsoleLogger();
 
-            // Determine whether to "intelligently" disable ETW logging for folks running outside the datacenter domain.
             if (AllowEtwLogging == AllowEtwLoggingValues.None)
             {
                 if (IsCurrentProcessElevated())

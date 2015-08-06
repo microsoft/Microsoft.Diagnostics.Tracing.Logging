@@ -78,8 +78,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging
 
         #region Private
         // HEY! HEY YOU! Are you adding stuff here? You're adding stuff, it's cool. Just go update
-        // http://bing/wiki/Managed_ETW_Logging#Logging_Configuration with what you've added. Santa
-        // will bring you bonus gifts.
+        // the 'configuration.md' file in doc with what you've added. Santa will bring you bonus gifts.
         private const string EtwOverrideXpath = "/loggers/etwlogging";
         private const string EtwOverrideEnabledAttribute = "enabled";
         private const string LogTagXpath = "/loggers/log";
