@@ -5,7 +5,7 @@ to perform logging within applications. Along with systems for logging to a vari
 console, disk, network) tools are provided which wrap [TraceEvent](http://blogs.msdn.com/b/dotnet/archive/2013/08/15/announcing-traceevent-monitoring-and-diagnostics-for-the-cloud.aspx)
 to provide a streamlined experience for parsing ETW data both from disk and realtime sessions.
 
-Additional documentation is available in the [doc](tree/master/doc) directory.
+Additional documentation is available in the [doc](doc/) directory.
 
 ## What's In the Box
 
@@ -129,7 +129,7 @@ session events from that provider can be filtered based on their severity and ke
 
 ## Reading ETL Logs
 
-The [LogTool utility](tree/master/utils/LogTool) provides code to build an executable called 'ELT' (formerly
+The [LogTool utility](utils/LogTool/) provides code to build an executable called 'ELT' (formerly
 'BLT' when this code was Bing-internal). This tool is both meant to demonstrate the various library
 facilities provided by the codebase and to present an easy-to-use command line interface for interacting
 with ETW sessions. It can be used to dump the contents of any ETW file complete with parsed arguments (e.g.
