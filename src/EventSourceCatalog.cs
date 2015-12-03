@@ -144,7 +144,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging
             }
 
             public string Name { get; private set; }
-            public EventSource Source { get; }
+            public EventSource Source { get; set; }
 
             public EventInfo this[int eventID]
             {

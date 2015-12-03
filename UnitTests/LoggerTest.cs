@@ -118,7 +118,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
                 this.ReceivedEvents = new List<ETWEvent>();
             }
 
-            public List<ETWEvent> ReceivedEvents { get; }
+            public List<ETWEvent> ReceivedEvents { get; set; }
 
             /// <summary>
             /// Start listening to events

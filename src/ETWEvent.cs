@@ -115,7 +115,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging
         /// <summary>
         /// TraceEvent source object for this wrapped data. Useful for access to events with unknown data formats.
         /// </summary>
-        public TraceEvent SourceEvent { get; }
+        public TraceEvent SourceEvent { get; set; }
 
         /// <summary>
         /// Name of the file containing this event.

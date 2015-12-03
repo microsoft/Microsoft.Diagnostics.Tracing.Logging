@@ -88,12 +88,12 @@ namespace Microsoft.Diagnostics.Tracing.Logging
         /// <summary>
         /// EventSource to subscribe to. May be null if ProviderID is provided.
         /// </summary>
-        public EventSource Source { get; }
+        public EventSource Source { get; set; }
 
         /// <summary>
         /// Guid to subscribe to. May be empty if Source is provided.
         /// </summary>
-        public Guid ProviderID { get; }
+        public Guid ProviderID { get; set; }
     }
 
     /// <summary>
@@ -405,7 +405,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging
         /// <summary>
         /// Regular expression filters for output.
         /// </summary>
-        protected List<Regex> Filters { get; }
+        protected List<Regex> Filters { get; set; }
         #endregion
 
         #region EventListener
@@ -1198,17 +1198,17 @@ namespace Microsoft.Diagnostics.Tracing.Logging
         // we don't want users to be able to tweak file/dir names, only filtering.
         public IEventLogger Logger { get; private set; }
 
-        public int RotationInterval { get; }
+        public int RotationInterval { get; set; }
 
         /// <summary>
         /// Whether we will defer to local time when setting a filename during rotation
         /// </summary>
-        public bool TimestampLocal { get; }
+        public bool TimestampLocal { get; set; }
 
         /// <summary>
         /// The template in use for filename rotation.
         /// </summary>
-        public string FilenameTemplate { get; }
+        public string FilenameTemplate { get; set; }
 
         /// <summary>
         /// Check to see whether a file rotation is due and rotate the file if necessary.
