@@ -62,7 +62,6 @@ namespace Microsoft.Diagnostics.Tracing.Logging
     /// </remarks>
     public sealed partial class LogManager : EventListener
     {
-        #region Public
         /// <summary>
         /// Minimum rotationInterval for file rotation. Rotation at a faster rotationInterval is not allowed.
         /// </summary>
@@ -393,9 +392,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging
                 return false;
             }
         }
-        #endregion
 
-        #region Private
         internal const string DataDirectoryEnvironmentVariable = "DATADIR";
 
         /// <summary>
@@ -704,7 +701,6 @@ namespace Microsoft.Diagnostics.Tracing.Logging
                                                       "buffer size must be between MinFileBufferSizeMB and MaxFileBufferSizeMB");
             }
         }
-        #endregion
 
         #region IDisposable
         [SuppressMessage("Microsoft.Usage", "CA2202:Do not dispose objects multiple times",
