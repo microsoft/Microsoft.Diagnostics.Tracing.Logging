@@ -139,3 +139,12 @@ easy-to-read text format or in JSON or XML.
 You can also use the tool to stand up realtime listening sessions that emit to the console for quick
 run-time debugging.
 
+## Building and testing the code
+
+The code is currently developed using Visual Studio 2015. Some C# 6 language features are used. Additionally
+the code currently only works on Windows (as it makes extensive use of Event Tracing For Windows).
+
+In order to run all unit tests Visual Studio must be started as an elevated process. If it is not run
+elevated some tests will exit as 'inconclusive' since they rely on the ability to create ETW sessions
+or HTTP listeners.
+
