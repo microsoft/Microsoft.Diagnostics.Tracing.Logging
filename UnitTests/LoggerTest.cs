@@ -29,6 +29,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
     using System.Globalization;
     using System.IO;
     using System.Net;
+    using System.Net.Sockets;
     using System.Runtime.Serialization;
     using System.Threading;
 
@@ -105,18 +106,22 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
         /// </summary>
         internal class NetworkLoggerListener
         {
-            private readonly int port;
             private readonly object receivedEventsLock = new object();
             private readonly AutoResetEvent waitHandle = new AutoResetEvent(false);
             private HttpListener httpListener;
             private bool isRunning;
             private int waitCount;
 
-            public NetworkLoggerListener(int port)
+            public NetworkLoggerListener()
             {
-                this.port = port;
+                var socket = new TcpListener(IPAddress.Loopback, 0);
+                socket.Start();
+                this.Port = (ushort)((IPEndPoint)socket.LocalEndpoint).Port;
+                socket.Stop();
                 this.ReceivedEvents = new List<ETWEvent>();
             }
+
+            public ushort Port { get; private set; }
 
             public List<ETWEvent> ReceivedEvents { get; }
 
@@ -129,7 +134,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
                 {
                     this.ReceivedEvents.Clear();
                     this.httpListener = new HttpListener();
-                    this.httpListener.Prefixes.Add(string.Format("http://+:{0}/", this.port));
+                    this.httpListener.Prefixes.Add($"http://localhsot:{this.Port}/");
                     this.httpListener.Start();
                     this.isRunning = true;
                     this.ReceiveRequestAsync();
@@ -639,18 +644,28 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
         public void TestNetworkLogger()
         {
             const int eventsToWrite = 1;
-            const int port = 9001;
-            var netListener = new NetworkLoggerListener(port);
+            NetworkLoggerListener netListener;
+            try
+            {
+                netListener = new NetworkLoggerListener();
+                netListener.Start();
+            }
+            catch (HttpListenerException)
+            {
+                Assert.Inconclusive("Could not start HTTP server to validate network logger.");
+                return;
+            }
+
+            var port = netListener.Port;
 
             try
             {
-                netListener.Start();
                 netListener.SetWaitReceivedEventsCount(eventsToWrite);
                 LogManager.Start();
                 LogManager.SetConfiguration("");
                 LogManager.DefaultRotate = false;
 
-                NetworkLogger logger = LogManager.CreateNetworkLogger("NetLog", IPAddress.Loopback.ToString(), port);
+                var logger = LogManager.CreateNetworkLogger("NetLog", IPAddress.Loopback.ToString(), port);
                 logger.SubscribeToEvents(TestLogger.Write, EventLevel.Verbose);
 
                 for (int i = 0; i < eventsToWrite; ++i)

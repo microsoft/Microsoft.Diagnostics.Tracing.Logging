@@ -133,6 +133,14 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             return fullFilename;
         }
 
+        private static void CheckElevated()
+        {
+            if (!LogManager.IsCurrentProcessElevated())
+            {
+                Assert.Inconclusive("Test process is not running elevated, cannot continue.");
+            }
+        }
+
         private enum FakeSignedEnum
         {
             FakeValue = 867
@@ -146,6 +154,8 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
         [Test]
         public void CanReadEventsFromRealtimeSession()
         {
+            CheckElevated();
+
             using (var reader = new ETWRealtimeProcessor("testRealtimeSession"))
             {
                 reader.SubscribeToProvider(TestLogger.Write.Guid, EventLevel.Verbose);
@@ -170,6 +180,8 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
         [Test]
         public void CanReadEventsWrittenToFile()
         {
+            CheckElevated();
+
             DateTime beforeStartTimestamp = DateTime.Now;
             string fullFilename = WriteTestFile("testReader.etl");
             DateTime afterEndTimestamp = DateTime.Now;
@@ -190,6 +202,8 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
         [Test]
         public void CanReuseFileProcessorForNewFiles()
         {
+            CheckElevated();
+
             DateTime beforeStartTimestamp = DateTime.Now;
             string firstFile = WriteTestFile("testMultipleFiles1.etl");
             DateTime afterFirstFileTimestamp = DateTime.Now;
@@ -233,6 +247,8 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
         [Test]
         public void CanSerializeAndDeserializeEventsProcessedInFiles()
         {
+            CheckElevated();
+
             string fullFilename = WriteTestFile("testSerialize.etl");
 
             var reader = new ETWFileProcessor(fullFilename);
@@ -280,6 +296,8 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
         [Test]
         public void ChangingETLFilenameCausesManifestToBeEmittedInNewFile()
         {
+            CheckElevated();
+
             const string prefix = "rotateFile";
             var files = new[] {prefix + "1.etl", prefix + "2.etl", prefix + "3.etl"};
             var resultFiles = new List<string>();
@@ -345,6 +363,8 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
         [Test]
         public void CreatingDuplicateRealtimeSessionTaskResultsInFaultedTaskIfSessionReclaimIsOff()
         {
+            CheckElevated();
+
             const string duplicateSessionName = "testDuplicateRealtimeSession";
 
             using (var reader1 = new ETWRealtimeProcessor(duplicateSessionName, true))

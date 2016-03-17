@@ -259,12 +259,5 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             catch (ArgumentOutOfRangeException) { }
             LogManager.Shutdown();
         }
-
-        [Test]
-        public void TestsAreRunningElevated()
-        {
-            Assert.IsTrue(LogManager.IsCurrentProcessElevated(),
-                          "These tests create kernel mode ETW sessions and must be run with elevated (UAC) privileges.");
-        }
     }
 }
