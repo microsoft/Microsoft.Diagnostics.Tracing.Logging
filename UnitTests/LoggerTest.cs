@@ -121,7 +121,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
                 this.ReceivedEvents = new List<ETWEvent>();
             }
 
-            public ushort Port { get; private set; }
+            public ushort Port { get; }
 
             public List<ETWEvent> ReceivedEvents { get; }
 
@@ -134,7 +134,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
                 {
                     this.ReceivedEvents.Clear();
                     this.httpListener = new HttpListener();
-                    this.httpListener.Prefixes.Add($"http://localhsot:{this.Port}/");
+                    this.httpListener.Prefixes.Add($"http://+:{this.Port}/");
                     this.httpListener.Start();
                     this.isRunning = true;
                     this.ReceiveRequestAsync();
@@ -675,7 +675,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
                 }
 
                 LogManager.DestroyLogger(logger);
-                Assert.IsTrue(netListener.WaitForReceivedEventsCount(30 * 1000));
+                Assert.IsTrue(netListener.WaitForReceivedEventsCount(5 * 1000));
                 Assert.AreEqual(netListener.ReceivedEvents[0].Parameters.Count, 1);
 
                 for (int i = 0; i < eventsToWrite; ++i)
