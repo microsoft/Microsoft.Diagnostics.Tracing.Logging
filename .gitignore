@@ -154,3 +154,9 @@ $RECYCLE.BIN/
 
 # Mac desktop service store files
 .DS_Store
+
+# TraceEvent goop
+TraceEvent.ReadMe.Txt
+TraceEvent.ReleaseNotes.Txt
+_TraceEventProgrammersGuide.docx
+
