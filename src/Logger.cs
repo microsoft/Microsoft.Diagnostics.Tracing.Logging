@@ -41,62 +41,6 @@ namespace Microsoft.Diagnostics.Tracing.Logging
     using Microsoft.Diagnostics.Tracing.Session;
 
     /// <summary>
-    /// Different types of loggers
-    /// </summary>
-    internal enum LoggerType
-    {
-        None,
-        Console,
-        MemoryBuffer,
-        TextLogFile,
-        ETLFile,
-        Network
-    }
-
-    public sealed class EventProviderSubscription
-    {
-        /// <summary>
-        /// Keywords to match.
-        /// </summary>
-        public EventKeywords Keywords = EventKeywords.None;
-
-        /// <summary>
-        /// Minimum event level to record.
-        /// </summary>
-        public EventLevel MinimumLevel = EventLevel.Informational;
-
-        public EventProviderSubscription(EventSource source)
-        {
-            if (source == null)
-            {
-                throw new ArgumentNullException("source");
-            }
-
-            this.Source = source;
-        }
-
-        public EventProviderSubscription(Guid providerID)
-        {
-            if (providerID == Guid.Empty)
-            {
-                throw new ArgumentException("Must specify valid provider ID", "providerID");
-            }
-
-            this.ProviderID = providerID;
-        }
-
-        /// <summary>
-        /// EventSource to subscribe to. May be null if ProviderID is provided.
-        /// </summary>
-        public EventSource Source { get; }
-
-        /// <summary>
-        /// Guid to subscribe to. May be empty if Source is provided.
-        /// </summary>
-        public Guid ProviderID { get; }
-    }
-
-    /// <summary>
     /// The common interfaces for an event logger which allow callers to subscribe to and unsubscribe from specific
     /// events, add filters, and get the backing filename.
     /// </summary>
@@ -365,11 +309,17 @@ namespace Microsoft.Diagnostics.Tracing.Logging
     /// </summary>
     public abstract class EventListenerDispatcher : EventListener, IEventLogger
     {
-        #region Private
-        private volatile bool disabled;
-        #endregion
+        [SuppressMessage("Microsoft.Design", "CA1051:DoNotDeclareVisibleInstanceFields",
+            Justification = "Making this property adds no value and does not improve the code quality")]
+        protected readonly object WriterLock = new object();
 
-        #region Public
+        private volatile bool disabled;
+
+        protected EventListenerDispatcher()
+        {
+            this.Filters = new List<Regex>();
+        }
+
         /// <summary>
         /// Whether this logger has been disabled (and should stop posting/writing new data)
         /// </summary>
@@ -390,25 +340,93 @@ namespace Microsoft.Diagnostics.Tracing.Logging
         /// <see cref="Guid.Empty">Guid.Empty</see> to disable activity ID filtering.
         /// </summary>
         public Guid FilterActivityID { get; set; }
-        #endregion
-
-        #region Protected
-        protected EventListenerDispatcher()
-        {
-            this.Filters = new List<Regex>();
-        }
-
-        [SuppressMessage("Microsoft.Design", "CA1051:DoNotDeclareVisibleInstanceFields",
-            Justification = "Making this property adds no value and does not improve the code quality")]
-        protected readonly object WriterLock = new object();
 
         /// <summary>
         /// Regular expression filters for output.
         /// </summary>
         protected List<Regex> Filters { get; }
-        #endregion
 
-        #region EventListener
+        public void SubscribeToEvents(EventProviderSubscription subscription)
+        {
+            if (subscription == null)
+            {
+                throw new ArgumentNullException("subscription");
+            }
+
+            if (subscription.Source != null)
+            {
+                this.SubscribeToEvents(subscription.Source, subscription.MinimumLevel, subscription.Keywords);
+            }
+            else
+            {
+                throw new NotSupportedException("Subscription to GUIDs is not supported");
+            }
+        }
+
+        public void SubscribeToEvents(ICollection<EventProviderSubscription> subscriptions)
+        {
+            if (subscriptions == null)
+            {
+                throw new ArgumentNullException("subscriptions");
+            }
+
+            foreach (var sub in subscriptions)
+            {
+                this.SubscribeToEvents(sub);
+            }
+        }
+
+        public void SubscribeToEvents(EventSource source, EventLevel minimumLevel)
+        {
+            this.SubscribeToEvents(source, minimumLevel, EventKeywords.None);
+        }
+
+        public void SubscribeToEvents(EventSource source, EventLevel minimumLevel, EventKeywords keywords)
+        {
+            if (source != null)
+            {
+                this.EnableEvents(source, minimumLevel, keywords);
+            }
+            else
+            {
+                throw new ArgumentNullException("source");
+            }
+        }
+
+        public void SubscribeToEvents(Guid providerId, EventLevel minimumLevel)
+        {
+            this.SubscribeToEvents(providerId, minimumLevel, EventKeywords.None);
+        }
+
+        public void SubscribeToEvents(Guid providerId, EventLevel minimumLevel, EventKeywords keywords)
+        {
+            throw new NotSupportedException("Subscription to GUIDs is not supported");
+        }
+
+        public void UnsubscribeFromEvents(EventSource source)
+        {
+            this.DisableEvents(source);
+        }
+
+        public void UnsubscribeFromEvents(Guid providerId)
+        {
+            throw new NotSupportedException("Unsubscription from GUIDs is not supported");
+        }
+
+        public void AddRegexFilter(string pattern)
+        {
+            lock (this.WriterLock)
+            {
+                this.Filters.Add(new Regex(pattern, RegexOptions.IgnoreCase));
+            }
+        }
+
+        public virtual string Filename
+        {
+            get { throw new NotSupportedException("This is not a file-backed logger"); }
+            set { throw new NotSupportedException("This is not a file-backed logger"); }
+        }
+
         /// <summary>
         /// Constructs an <see cref="ETWEvent"/> object from eventData and calls the overloadable Write method
         /// with the data.
@@ -417,7 +435,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging
         [SuppressMessage("Microsoft.Design", "CA1062:Validate arguments of public methods", MessageId = "0",
             Justification =
                 "eventData being null would be a catastrophic contract break by EventSource. This is not anticipated.")]
-        protected override sealed void OnEventWritten(EventWrittenEventArgs eventData)
+        protected sealed override void OnEventWritten(EventWrittenEventArgs eventData)
         {
             if (eventData.EventId == (int)DynamicTraceEventParser.ManifestEventID)
             {
@@ -465,92 +483,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging
         /// </summary>
         /// <param name="ev"></param>
         public abstract void Write(ETWEvent ev);
-        #endregion
 
-        #region IEventLogger
-        public void SubscribeToEvents(EventProviderSubscription subscription)
-        {
-            if (subscription == null)
-            {
-                throw new ArgumentNullException("subscription");
-            }
-
-            if (subscription.Source != null)
-            {
-                this.SubscribeToEvents(subscription.Source, subscription.MinimumLevel, subscription.Keywords);
-            }
-            else
-            {
-                throw new NotSupportedException("Subscription to GUIDs is not supported");
-            }
-        }
-
-        public void SubscribeToEvents(ICollection<EventProviderSubscription> subscriptions)
-        {
-            if (subscriptions == null)
-            {
-                throw new ArgumentNullException("subscriptions");
-            }
-
-            foreach (var sub in subscriptions)
-            {
-                this.SubscribeToEvents(sub);
-            }
-        }
-
-        public void SubscribeToEvents(EventSource source, EventLevel minimumLevel)
-        {
-            SubscribeToEvents(source, minimumLevel, EventKeywords.None);
-        }
-
-        public void SubscribeToEvents(EventSource source, EventLevel minimumLevel, EventKeywords keywords)
-        {
-            if (source != null)
-            {
-                this.EnableEvents(source, minimumLevel, keywords);
-            }
-            else
-            {
-                throw new ArgumentNullException("source");
-            }
-        }
-
-        public void SubscribeToEvents(Guid providerId, EventLevel minimumLevel)
-        {
-            SubscribeToEvents(providerId, minimumLevel, EventKeywords.None);
-        }
-
-        public void SubscribeToEvents(Guid providerId, EventLevel minimumLevel, EventKeywords keywords)
-        {
-            throw new NotSupportedException("Subscription to GUIDs is not supported");
-        }
-
-        public void UnsubscribeFromEvents(EventSource source)
-        {
-            this.DisableEvents(source);
-        }
-
-        public void UnsubscribeFromEvents(Guid providerId)
-        {
-            throw new NotSupportedException("Unsubscription from GUIDs is not supported");
-        }
-
-        public void AddRegexFilter(string pattern)
-        {
-            lock (this.WriterLock)
-            {
-                this.Filters.Add(new Regex(pattern, RegexOptions.IgnoreCase));
-            }
-        }
-
-        public virtual string Filename
-        {
-            get { throw new NotSupportedException("This is not a file-backed logger"); }
-            set { throw new NotSupportedException("This is not a file-backed logger"); }
-        }
-        #endregion
-
-        #region IDisposable
         public override void Dispose()
         {
             lock (this.WriterLock)
@@ -562,7 +495,6 @@ namespace Microsoft.Diagnostics.Tracing.Logging
         }
 
         protected abstract void Dispose(bool disposing);
-        #endregion
     }
 
     /// <summary>
@@ -577,12 +509,10 @@ namespace Microsoft.Diagnostics.Tracing.Logging
     {
         private readonly EventStringFormatter formatter = new EventStringFormatter();
 
-        #region Protected
         /// <summary>
         /// The TextWriter object used to emit logged data
         /// </summary>
         protected TextWriter Writer { get; set; }
-        #endregion
 
         /// <summary>
         /// Expose formatting options to the consumer.
@@ -593,17 +523,17 @@ namespace Microsoft.Diagnostics.Tracing.Logging
             set { this.formatter.Options = value; }
         }
 
-        public override sealed void Write(ETWEvent ev)
+        public sealed override void Write(ETWEvent ev)
         {
             if (this.Writer == null)
             {
                 return;
             }
 
-            string output = ev.ToString(this.formatter);
+            var output = ev.ToString(this.formatter);
             if (this.Filters.Count > 0)
             {
-                bool matched = false;
+                var matched = false;
                 foreach (var filter in this.Filters)
                 {
                     if (filter.IsMatch(output))
@@ -630,13 +560,12 @@ namespace Microsoft.Diagnostics.Tracing.Logging
             }
         }
 
-        #region IDisposable
         [SuppressMessage("Microsoft.Design", "CA1063:ImplementIDisposableCorrectly",
             Justification = "This code ends up cleaner than copying the Dispose() method to inheritors"),
          SuppressMessage("Microsoft.Usage", "CA2202:Do not dispose objects multiple times",
              Justification =
                  "EventListener does not provide a protected Dispose(bool) method to correctly implement the pattern")]
-        public override sealed void Dispose()
+        public sealed override void Dispose()
         {
             lock (this.WriterLock)
             {
@@ -646,20 +575,16 @@ namespace Microsoft.Diagnostics.Tracing.Logging
             }
             GC.SuppressFinalize(this);
         }
-        #endregion
     }
 
     internal sealed class ConsoleLogger : BaseTextLogger
     {
-        #region Public
         public ConsoleLogger()
         {
             this.Writer = Console.Out;
             InternalLogger.Write.LoggerDestinationOpened(this.GetType().ToString(), LogManager.ConsoleLoggerName);
         }
-        #endregion
 
-        #region IDisposable
         protected override void Dispose(bool disposing)
         {
             if (disposing)
@@ -668,7 +593,6 @@ namespace Microsoft.Diagnostics.Tracing.Logging
                 InternalLogger.Write.LoggerDestinationClosed(this.GetType().ToString(), LogManager.ConsoleLoggerName);
             }
         }
-        #endregion
     }
 
     /// <summary>
@@ -679,29 +603,26 @@ namespace Microsoft.Diagnostics.Tracing.Logging
     /// </remarks>
     public sealed class MemoryLogger : BaseTextLogger
     {
-        #region IDisposable
-        protected override void Dispose(bool disposing)
-        {
-            if (disposing && this.Stream != null)
-            {
-                this.Writer.Dispose(); // calls Dispose on the owned stream for us.
-                this.Stream = null;
-                InternalLogger.Write.LoggerDestinationClosed(this.GetType().ToString(), ":memory:");
-            }
-        }
-        #endregion
-
-        #region Public
         /// <summary>
-        /// Construct a new in-memory logger.
+        /// Construct a new in-memory logger using a provided stream.
         /// </summary>
         /// <param name="stream">The memory stream to write into.</param>
-        internal MemoryLogger(MemoryStream stream)
+        public MemoryLogger(MemoryStream stream)
         {
+            if (stream == null)
+            {
+                throw new ArgumentNullException(nameof(stream));
+            }
             this.Stream = stream;
             this.Writer = new StreamWriter(this.Stream, new UTF8Encoding(false, false));
             InternalLogger.Write.LoggerDestinationOpened(this.GetType().ToString(), ":memory:");
         }
+
+        /// <summary>
+        /// Construct a new in-memory logger using a newly created stream of the default size with no bound.
+        /// </summary>
+        public MemoryLogger()
+            : this(new MemoryStream(LogManager.InitialMemoryStreamSize)) { }
 
         /// <summary>
         /// Retrieve the attached MemoryStream object being used by the logger.
@@ -711,20 +632,251 @@ namespace Microsoft.Diagnostics.Tracing.Logging
         /// property to true.
         /// </remarks>
         public MemoryStream Stream { get; private set; }
-        #endregion
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && this.Stream != null)
+            {
+                this.Writer.Dispose(); // calls Dispose on the owned stream for us.
+                this.Stream = null;
+                InternalLogger.Write.LoggerDestinationClosed(this.GetType().ToString(), ":memory:");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Base class for loggers that write to files (ETW or text)
+    /// </summary>
+    internal sealed class FileBackedLogger : IDisposable
+    {
+        /// <summary>
+        /// The filename extension used for text logs.
+        /// </summary>
+        public const string TextLogExtension = ".log";
+
+        /// <summary>
+        /// The filename extension used for ETW logs.
+        /// </summary>
+        public const string ETLExtension = ".etl";
+
+        private readonly string baseFilename;
+        private readonly string directoryName;
+        private readonly string fileExtension;
+        private readonly LogType logType;
+
+        private string currentFilename;
+        private DateTime intervalEnd;
+        private DateTime intervalStart;
+
+        /// <summary>
+        /// Constructs a manager for a file-backed logger.
+        /// </summary>
+        /// <param name="configuration">Configuration for the logger.</param>
+        /// <remarks>
+        /// Callers are expected to call CheckedRotate() periodically to cause file rotation to occur as desired.
+        /// If rotationInterval is set to 0 the file will not be rotated and the filename will not contain timestamps.
+        /// </remarks>
+        [SuppressMessage("Microsoft.Reliability", "CA2000:Dispose objects before losing scope",
+            Justification = "We hold the logger internally and so do not want to dispose it")]
+        public FileBackedLogger(LogConfiguration configuration)
+        {
+            this.directoryName = Path.GetFullPath(configuration.Directory);
+            if (!Directory.Exists(this.directoryName))
+            {
+                Directory.CreateDirectory(this.directoryName); // allowed to throw, caller should handle it
+            }
+
+            this.baseFilename = configuration.Name;
+            this.directoryName = configuration.Directory;
+            this.logType = configuration.Type;
+            this.RotationInterval = configuration.RotationInterval;
+            this.TimestampLocal = configuration.TimestampLocal;
+
+            var now = this.AdjustUtcTime(DateTime.UtcNow);
+
+            switch (this.logType)
+            {
+            case LogType.Text:
+                this.fileExtension = TextLogExtension;
+                this.FilenameTemplate = configuration.FilenameTemplate + this.fileExtension;
+                this.UpdateCurrentFilename(now);
+                var textFileLogger = new TextFileLogger(this.currentFilename, configuration.BufferSizeMB);
+                if (!this.TimestampLocal)
+                {
+                    textFileLogger.FormatOptions &= ~TextLogFormatOptions.TimestampInLocalTime;
+                }
+                this.Logger = textFileLogger;
+                break;
+            case LogType.EventTracing:
+                this.fileExtension = ETLExtension;
+                this.FilenameTemplate = configuration.FilenameTemplate + this.fileExtension;
+                this.UpdateCurrentFilename(now);
+                this.Logger = new ETLFileLogger(this.baseFilename, this.currentFilename, configuration.BufferSizeMB);
+                break;
+            default:
+                throw new ArgumentException("log type " + logType + " not implemented", "logType");
+            }
+
+            InternalLogger.Write.CreateFileDestination(this.baseFilename, this.directoryName, this.RotationInterval,
+                                                       configuration.FilenameTemplate);
+        }
+
+        // we don't want users to be able to tweak file/dir names, only filtering.
+        public IEventLogger Logger { get; private set; }
+
+        public int RotationInterval { get; }
+
+        /// <summary>
+        /// Whether we will defer to local time when setting a filename during rotation
+        /// </summary>
+        public bool TimestampLocal { get; }
+
+        /// <summary>
+        /// The template in use for filename rotation.
+        /// </summary>
+        public string FilenameTemplate { get; }
+
+        public void Dispose()
+        {
+            this.Dispose(true);
+        }
+
+        /// <summary>
+        /// Check to see whether a file rotation is due and rotate the file if necessary.
+        /// </summary>
+        /// <param name="now">The current UTC time (<see cref="DateTime.UtcNow"/>)</param>
+        public void CheckedRotate(DateTime now)
+        {
+            now = this.AdjustUtcTime(now);
+
+            if (this.RotationInterval > 0 && this.intervalEnd.Ticks <= now.Ticks)
+            {
+                this.Rotate(now);
+            }
+        }
+
+        /// <summary>
+        /// Immediately rotate/rename the file with the provided timestamp.
+        /// </summary>
+        /// <param name="now">The current UTC time (<see cref="DateTime.UtcNow"/>)</param>
+        public void Rotate(DateTime now)
+        {
+            now = this.AdjustUtcTime(now);
+
+            this.UpdateCurrentFilename(now);
+            this.Logger.Filename = this.currentFilename;
+        }
+
+        /// <summary>
+        /// Ensure a filename template formats correctly and generates a valid filename
+        /// </summary>
+        /// <param name="template">The template to validate</param>
+        /// <returns>true if the template is valid, false otherwise</returns>
+        public static bool IsValidFilenameTemplate(string template)
+        {
+            const string baseName = "history";
+            var fourScoreEtc = new DateTime(1776, 7, 4);
+            var gAddress = new DateTime(1863, 11, 19);
+            const string someMachine = "ORTHANC";
+            const long jenny = 8675309;
+
+            try
+            {
+                if (!template.Contains("{0}"))
+                {
+                    return false; // base filename MUST be represented without any goop in the formatting.
+                }
+
+                string generatedName = string.Format(template, baseName, fourScoreEtc, gAddress, someMachine, jenny);
+                if (generatedName.IndexOfAny(Path.GetInvalidFileNameChars()) != -1)
+                {
+                    return false;
+                }
+            }
+            catch (FormatException)
+            {
+                return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Adjust the given 'now' value from UTC to local time if we need that.
+        /// </summary>
+        /// <param name="utcNow">The current time (from <see cref="DateTime.UtcNow"/>)</param>
+        /// <returns>The adjusted time value.</returns>
+        private DateTime AdjustUtcTime(DateTime utcNow)
+        {
+            return this.TimestampLocal ? utcNow.ToLocalTime() : utcNow;
+        }
+
+        /// <summary>
+        /// Conditionally update the current filename
+        /// </summary>
+        /// <param name="now">The current time</param>
+        /// <returns>true if the filename required updating, false otherwise</returns>
+        private void UpdateCurrentFilename(DateTime now)
+        {
+            string newFilename;
+            if (this.RotationInterval <= 0)
+            {
+                this.intervalStart = this.intervalEnd = new DateTime(0);
+                newFilename = this.baseFilename + this.fileExtension;
+            }
+            else
+            {
+                // calculate start / end times which we will use for the filename
+                long startTicks = now.Ticks - (now.Ticks % (this.RotationInterval * TimeSpan.TicksPerSecond));
+                long endTicks = startTicks + (this.RotationInterval * TimeSpan.TicksPerSecond);
+
+                this.intervalStart = new DateTime(now.Ticks);
+                this.intervalEnd = new DateTime(endTicks);
+                newFilename = string.Format(this.FilenameTemplate, this.baseFilename, this.intervalStart,
+                                            this.intervalEnd, Environment.MachineName, MillisecondsSinceMidnight(now));
+            }
+
+            string newFileName = Path.Combine(this.directoryName, newFilename);
+            this.currentFilename = newFileName;
+            InternalLogger.Write.UpdateFileRotationTimes(this.baseFilename, this.intervalStart.Ticks,
+                                                         this.intervalEnd.Ticks);
+        }
+
+        /// <summary>
+        /// Turn a timestamp into a "sequence number"-esque value for granular indication of log starts
+        /// </summary>
+        /// <param name="now">The current time</param>
+        /// <returns>The number of milliseconds since midnight</returns>
+        /// <remarks>
+        /// This partner-specific hack should NOT exist. All effort should be made to get this out of the code.
+        /// </remarks>
+        private static long MillisecondsSinceMidnight(DateTime now)
+        {
+            long sequence = ((now.Hour * 60) + now.Minute) * 60000;
+            sequence += (now.Second * 1000) + now.Millisecond;
+            return sequence;
+        }
+
+        private void Dispose(bool disposing)
+        {
+            if (disposing && this.Logger != null)
+            {
+                (this.Logger as IDisposable).Dispose();
+                this.Logger = null;
+            }
+        }
     }
 
     internal sealed class TextFileLogger : BaseTextLogger
     {
-        #region Public
+        private readonly int outputBufferSize;
+        private FileStream outputFile;
+
         public TextFileLogger(string filename, int bufferSizeMB)
         {
             this.outputBufferSize = bufferSizeMB * 1024 * 1024;
             this.Open(filename);
         }
-        #endregion
 
-        #region IEventLogger
         public override string Filename
         {
             get
@@ -742,9 +894,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging
                 }
             }
         }
-        #endregion
 
-        #region IDisposable
         protected override void Dispose(bool disposing)
         {
             if (disposing && this.outputFile != null)
@@ -752,11 +902,6 @@ namespace Microsoft.Diagnostics.Tracing.Logging
                 this.Close();
             }
         }
-        #endregion
-
-        #region Private
-        private readonly int outputBufferSize;
-        private FileStream outputFile;
 
         private void Open(string filename)
         {
@@ -796,21 +941,17 @@ namespace Microsoft.Diagnostics.Tracing.Logging
                 InternalLogger.Write.LoggerDestinationClosed(this.GetType().ToString(), filename);
             }
         }
-        #endregion
     }
 
     internal sealed class ETLFileLogger : IEventLogger, IDisposable
     {
-        #region IDisposable
-        public void Dispose()
-        {
-            string filename = this.session.FileName;
-            this.session.Dispose();
-            InternalLogger.Write.LoggerDestinationClosed(this.GetType().ToString(), filename);
-        }
-        #endregion
+        internal const string SessionPrefix = "Microsoft.Diagnostics.Tracing.Logging.";
+        private const int MaxRenameTries = 3;
+        private const int RenameRetryWaitMS = 500;
+        private const int MaxWaitForSessionChange = 5000; // in ms
+        private readonly TraceEventSession session;
+        private bool hasSubscription;
 
-        #region Public
         public ETLFileLogger(string sessionName, string filename, int bufferSizeMB)
         {
             string fullSessionName = SessionPrefix + sessionName;
@@ -835,115 +976,13 @@ namespace Microsoft.Diagnostics.Tracing.Logging
             InternalLogger.Write.LoggerDestinationOpened(this.GetType().ToString(), filename);
         }
 
-        public static void CloseDuplicateTraceSession(string sessionName)
+        public void Dispose()
         {
-            InternalLogger.Write.ConflictingTraceSessionFound(sessionName);
-
-            TraceEventSession s = null;
-            try
-            {
-                // we can't control this session so we need to stop it
-                s = new TraceEventSession(sessionName); // might throw if it's in the midst of being shut down
-                s.Stop();
-            }
-            catch (FileNotFoundException)
-            {
-                // well, okay, then it's probably gone now.
-            }
-            finally
-            {
-                if (s != null)
-                {
-                    s.Dispose();
-                }
-            }
-
-            // Now we enter a brief waiting period to make sure it dies. We must do this because ControlTrace()
-            // (the underlying win32 API) is asynchronous and our request to terminate the session may take
-            // a small amount of time to complete.
-            if (!WaitForSessionChange(sessionName, false))
-            {
-                InternalLogger.Write.ConflictingTraceSessionStuck(sessionName);
-                throw new OperationCanceledException("could not tear down existing trace session");
-            }
-        }
-        #endregion
-
-        #region Private
-        internal const string SessionPrefix = "Microsoft.Diagnostics.Tracing.Logging.";
-        private const int MaxRenameTries = 3;
-        private const int RenameRetryWaitMS = 500;
-        private const int MaxWaitForSessionChange = 5000; // in ms
-        private readonly TraceEventSession session;
-        private bool hasSubscription;
-
-        // Maps the total requested buffer size to the sizes we'll use for individual ETW buffers. The mentality here
-        // is that requests for particularly large overall buffers indicate a need for overall higher throughput, in
-        // those cases Windows performs best for both read and write operations if the buffers are larger.
-        // Individual buffer sizes are not exposed to the end user because the other types of logs have no analogue,
-        // and we can derive the user intent from the overall buffer size they request.
-        // Mapping:
-        // Below 4MB - 64KB buffers
-        // Below 8MB - 128KB buffers
-        // Below 16MB - 256KB buffers
-        // Below 32MB - 512KB buffers
-        // 32MB and up - 1024KB buffers
-        private static int GetIndividualBufferSizeKB(int totalBufferSizeMB)
-        {
-            const int minBufferSizeMB = 2;
-            const int maxIndividualBufferSizeKB = 1024;
-
-            totalBufferSizeMB = Math.Max(minBufferSizeMB, totalBufferSizeMB);
-
-            return Math.Min(maxIndividualBufferSizeKB, (totalBufferSizeMB >> 1) * 64);
+            string filename = this.session.FileName;
+            this.session.Dispose();
+            InternalLogger.Write.LoggerDestinationClosed(this.GetType().ToString(), filename);
         }
 
-        private static TraceEventLevel EventLevelToTraceEventLevel(EventLevel level)
-        {
-            switch (level)
-            {
-            case EventLevel.Critical:
-                return TraceEventLevel.Critical;
-            case EventLevel.Error:
-                return TraceEventLevel.Error;
-            case EventLevel.Informational:
-                return TraceEventLevel.Informational;
-            case EventLevel.LogAlways:
-                return TraceEventLevel.Always;
-            case EventLevel.Verbose:
-                return TraceEventLevel.Verbose;
-            case EventLevel.Warning:
-                return TraceEventLevel.Warning;
-
-            default:
-                throw new ArgumentException("level had unexpected value", "level");
-            }
-        }
-
-        /// <summary>
-        /// Wait for a pre-determined amount of time for the state of a session to change.
-        /// </summary>
-        /// <param name="sessionName">Name of the session.</param>
-        /// <param name="open">Whether the session should *end* in the open or closed state.</param>
-        /// <returns>True if the state changed successfully within the alotted time.</returns>
-        private static bool WaitForSessionChange(string sessionName, bool open)
-        {
-            int slept = 0;
-            TraceEventSession session = TraceEventSession.GetActiveSession(sessionName);
-
-            while ((open ? session == null : session != null) && slept < MaxWaitForSessionChange)
-            {
-                const int sleepFor = MaxWaitForSessionChange / 10;
-                Thread.Sleep(sleepFor);
-                slept += sleepFor;
-                session = TraceEventSession.GetActiveSession(sessionName);
-            }
-
-            return (open ? session != null : session == null);
-        }
-        #endregion
-
-        #region IEventLogger
         public void SubscribeToEvents(EventProviderSubscription subscription)
         {
             if (subscription == null)
@@ -1086,272 +1125,104 @@ namespace Microsoft.Diagnostics.Tracing.Logging
                 }
             }
         }
-        #endregion
-    }
 
-    /// <summary>
-    /// Holder for file based loggers and associated metadata
-    /// </summary>
-    internal sealed class FileBackedLogger : IDisposable
-    {
-        #region Public
-        /// <summary>The default filename template for rotated log files</summary>
-        /// <remarks>
-        /// This yields a string like "foo_20110623T154000Z--T155000Z"
-        /// This bit of goop is intended to be ISO 8601 compliant and sorts very nicely.
-        /// </remarks>
-        public const string DefaultFilenameTemplate = "{0}_{1:yyyyMMdd}T{1:HHmmss}Z--T{2:HHmmss}Z";
-
-        /// <summary>The default filename template for rotated log files when using local timestamps</summary>
-        /// <remarks>
-        /// This yields a string like "foo_20110623T154000-08--T155000-08". Note the zone offsets which help deal
-        /// with timezone changes. HOWEVER, this template assumes a timezone with ONLY hour-based offsets and this
-        /// code would not be suitable for use in areas where timezone offsets cross over into minutes (e.g. Tibet,
-        /// India, etc).
-        /// </remarks>
-        public const string DefaultLocalTimeFilenameTemplate = "{0}_{1:yyyyMMdd}T{1:HHmmsszz}--T{2:HHmmsszz}";
-
-        /// <summary>
-        /// The filename extension used for text logs.
-        /// </summary>
-        public const string TextLogExtension = ".log";
-
-        /// <summary>
-        /// The filename extension used for ETW logs.
-        /// </summary>
-        public const string ETLExtension = ".etl";
-
-        /// <summary>
-        /// Constructs a manager for a file-backed logger
-        /// </summary>
-        /// <param name="baseFilename">Base portion of filename</param>
-        /// <param name="directoryName">Directory to store file(s) in</param>
-        /// <param name="logType">Type of log output</param>
-        /// <param name="bufferSizeMB">Size in kilobytes of underlying buffers used by the logger</param>
-        /// <param name="rotationInterval">Time period a single file should be open for</param>
-        /// <param name="filenameTemplate">String formatting template for the filename (if it uses rotation)</param>
-        /// <param name="timestampLocal">Whether to use local time for the timestamps</param>
-        /// <remarks>
-        /// Callers are expected to call CheckedRotate() periodically to cause file rotation to occur as desired.
-        /// If rotationInterval is set to 0 the file will not be rotated and the filename will not contain timestamps.
-        /// </remarks>
-        [SuppressMessage("Microsoft.Reliability", "CA2000:Dispose objects before losing scope",
-            Justification = "We hold the logger internally and so do not want to dispose it")]
-        public FileBackedLogger(string baseFilename, string directoryName, LoggerType logType, int bufferSizeMB,
-                                int rotationInterval, string filenameTemplate, bool timestampLocal)
+        public static void CloseDuplicateTraceSession(string sessionName)
         {
-            this.directoryName = Path.GetFullPath(directoryName);
-            if (!Directory.Exists(this.directoryName))
-            {
-                Directory.CreateDirectory(this.directoryName); // allowed to throw, caller should handle it
-            }
+            InternalLogger.Write.ConflictingTraceSessionFound(sessionName);
 
-            this.baseFilename = baseFilename;
-            this.directoryName = directoryName;
-            this.loggerType = logType;
-            this.RotationInterval = rotationInterval;
-            this.TimestampLocal = timestampLocal;
-
-            DateTime now = this.AdjustUtcTime(DateTime.UtcNow);
-
-            // The rest of the library callers are built to pass in our constant for filename template, ignoring
-            // whether they want local timestamps or not. Keep the logic here. We do ReferenceEquals because we
-            // expect external callers who are passing in their own templates to put in the right format if they
-            // want local time.
-            if (timestampLocal && filenameTemplate == DefaultFilenameTemplate)
-            {
-                filenameTemplate = DefaultLocalTimeFilenameTemplate;
-            }
-
-            if (!IsValidFilenameTemplate(filenameTemplate))
-            {
-                throw new ArgumentException("invalid template format", "filenameTemplate");
-            }
-
-            switch (this.loggerType)
-            {
-            case LoggerType.TextLogFile:
-                this.fileExtension = TextLogExtension;
-                this.FilenameTemplate = filenameTemplate + this.fileExtension;
-                this.UpdateCurrentFilename(now);
-                var textFileLogger = new TextFileLogger(this.currentFilename, bufferSizeMB);
-                if (!timestampLocal)
-                {
-                    textFileLogger.FormatOptions &= ~TextLogFormatOptions.TimestampInLocalTime;
-                }
-                this.Logger = textFileLogger;
-                break;
-            case LoggerType.ETLFile:
-                this.fileExtension = ETLExtension;
-                this.FilenameTemplate = filenameTemplate + this.fileExtension;
-                this.UpdateCurrentFilename(now);
-                this.Logger = new ETLFileLogger(this.baseFilename, this.currentFilename, bufferSizeMB);
-                break;
-            default:
-                throw new ArgumentException("log type " + logType + " not implemented", "logType");
-            }
-
-            InternalLogger.Write.CreateFileDestination(this.baseFilename, this.directoryName, this.RotationInterval,
-                                                       filenameTemplate);
-        }
-
-        // we don't want users to be able to tweak file/dir names, only filtering.
-        public IEventLogger Logger { get; private set; }
-
-        public int RotationInterval { get; }
-
-        /// <summary>
-        /// Whether we will defer to local time when setting a filename during rotation
-        /// </summary>
-        public bool TimestampLocal { get; }
-
-        /// <summary>
-        /// The template in use for filename rotation.
-        /// </summary>
-        public string FilenameTemplate { get; }
-
-        /// <summary>
-        /// Check to see whether a file rotation is due and rotate the file if necessary.
-        /// </summary>
-        /// <param name="now">The current UTC time (<see cref="DateTime.UtcNow"/>)</param>
-        public void CheckedRotate(DateTime now)
-        {
-            now = this.AdjustUtcTime(now);
-
-            if (this.RotationInterval > 0 && this.intervalEnd.Ticks <= now.Ticks)
-            {
-                this.Rotate(now);
-            }
-        }
-
-        /// <summary>
-        /// Immediately rotate/rename the file with the provided timestamp.
-        /// </summary>
-        /// <param name="now">The current UTC time (<see cref="DateTime.UtcNow"/>)</param>
-        public void Rotate(DateTime now)
-        {
-            now = this.AdjustUtcTime(now);
-
-            this.UpdateCurrentFilename(now);
-            this.Logger.Filename = this.currentFilename;
-        }
-
-        /// <summary>
-        /// Ensure a filename template formats correctly and generates a valid filename
-        /// </summary>
-        /// <param name="template">The template to validate</param>
-        /// <returns>true if the template is valid, false otherwise</returns>
-        public static bool IsValidFilenameTemplate(string template)
-        {
-            const string baseName = "history";
-            var fourScoreEtc = new DateTime(1776, 7, 4);
-            var gAddress = new DateTime(1863, 11, 19);
-            const string someMachine = "ORTHANC";
-            const long jenny = 8675309;
-
+            TraceEventSession s = null;
             try
             {
-                if (!template.Contains("{0}"))
+                // we can't control this session so we need to stop it
+                s = new TraceEventSession(sessionName); // might throw if it's in the midst of being shut down
+                s.Stop();
+            }
+            catch (FileNotFoundException)
+            {
+                // well, okay, then it's probably gone now.
+            }
+            finally
+            {
+                if (s != null)
                 {
-                    return false; // base filename MUST be represented without any goop in the formatting.
-                }
-
-                string generatedName = string.Format(template, baseName, fourScoreEtc, gAddress, someMachine, jenny);
-                if (generatedName.IndexOfAny(Path.GetInvalidFileNameChars()) != -1)
-                {
-                    return false;
+                    s.Dispose();
                 }
             }
-            catch (FormatException)
+
+            // Now we enter a brief waiting period to make sure it dies. We must do this because ControlTrace()
+            // (the underlying win32 API) is asynchronous and our request to terminate the session may take
+            // a small amount of time to complete.
+            if (!WaitForSessionChange(sessionName, false))
             {
-                return false;
+                InternalLogger.Write.ConflictingTraceSessionStuck(sessionName);
+                throw new OperationCanceledException("could not tear down existing trace session");
             }
-            return true;
-        }
-        #endregion
-
-        #region Private
-        private readonly string baseFilename;
-        private readonly string directoryName;
-        private readonly string fileExtension;
-        private readonly LoggerType loggerType;
-
-        private string currentFilename;
-        private DateTime intervalEnd;
-        private DateTime intervalStart;
-
-        /// <summary>
-        /// Adjust the given 'now' value from UTC to local time if we need that.
-        /// </summary>
-        /// <param name="utcNow">The current time (from <see cref="DateTime.UtcNow"/>)</param>
-        /// <returns>The adjusted time value.</returns>
-        private DateTime AdjustUtcTime(DateTime utcNow)
-        {
-            return this.TimestampLocal ? utcNow.ToLocalTime() : utcNow;
         }
 
-        /// <summary>
-        /// Conditionally update the current filename
-        /// </summary>
-        /// <param name="now">The current time</param>
-        /// <returns>true if the filename required updating, false otherwise</returns>
-        private void UpdateCurrentFilename(DateTime now)
+        // Maps the total requested buffer size to the sizes we'll use for individual ETW buffers. The mentality here
+        // is that requests for particularly large overall buffers indicate a need for overall higher throughput, in
+        // those cases Windows performs best for both read and write operations if the buffers are larger.
+        // Individual buffer sizes are not exposed to the end user because the other types of logs have no analogue,
+        // and we can derive the user intent from the overall buffer size they request.
+        // Mapping:
+        // Below 4MB - 64KB buffers
+        // Below 8MB - 128KB buffers
+        // Below 16MB - 256KB buffers
+        // Below 32MB - 512KB buffers
+        // 32MB and up - 1024KB buffers
+        private static int GetIndividualBufferSizeKB(int totalBufferSizeMB)
         {
-            string newFilename;
-            if (this.RotationInterval <= 0)
-            {
-                this.intervalStart = this.intervalEnd = new DateTime(0);
-                newFilename = this.baseFilename + this.fileExtension;
-            }
-            else
-            {
-                // calculate start / end times which we will use for the filename
-                long startTicks = now.Ticks - (now.Ticks % (this.RotationInterval * TimeSpan.TicksPerSecond));
-                long endTicks = startTicks + (this.RotationInterval * TimeSpan.TicksPerSecond);
+            const int minBufferSizeMB = 2;
+            const int maxIndividualBufferSizeKB = 1024;
 
-                this.intervalStart = new DateTime(now.Ticks);
-                this.intervalEnd = new DateTime(endTicks);
-                newFilename = string.Format(this.FilenameTemplate, this.baseFilename, this.intervalStart,
-                                            this.intervalEnd, Environment.MachineName, MillisecondsSinceMidnight(now));
-            }
+            totalBufferSizeMB = Math.Max(minBufferSizeMB, totalBufferSizeMB);
 
-            string newFileName = Path.Combine(this.directoryName, newFilename);
-            this.currentFilename = newFileName;
-            InternalLogger.Write.UpdateFileRotationTimes(this.baseFilename, this.intervalStart.Ticks,
-                                                         this.intervalEnd.Ticks);
+            return Math.Min(maxIndividualBufferSizeKB, (totalBufferSizeMB >> 1) * 64);
+        }
+
+        private static TraceEventLevel EventLevelToTraceEventLevel(EventLevel level)
+        {
+            switch (level)
+            {
+            case EventLevel.Critical:
+                return TraceEventLevel.Critical;
+            case EventLevel.Error:
+                return TraceEventLevel.Error;
+            case EventLevel.Informational:
+                return TraceEventLevel.Informational;
+            case EventLevel.LogAlways:
+                return TraceEventLevel.Always;
+            case EventLevel.Verbose:
+                return TraceEventLevel.Verbose;
+            case EventLevel.Warning:
+                return TraceEventLevel.Warning;
+
+            default:
+                throw new ArgumentException("level had unexpected value", "level");
+            }
         }
 
         /// <summary>
-        /// Turn a timestamp into a "sequence number"-esque value for granular indication of log starts
+        /// Wait for a pre-determined amount of time for the state of a session to change.
         /// </summary>
-        /// <param name="now">The current time</param>
-        /// <returns>The number of milliseconds since midnight</returns>
-        /// <remarks>
-        /// This partner-specific hack should NOT exist. All effort should be made to get this out of the code.
-        /// </remarks>
-        private static long MillisecondsSinceMidnight(DateTime now)
+        /// <param name="sessionName">Name of the session.</param>
+        /// <param name="open">Whether the session should *end* in the open or closed state.</param>
+        /// <returns>True if the state changed successfully within the alotted time.</returns>
+        private static bool WaitForSessionChange(string sessionName, bool open)
         {
-            long sequence = ((now.Hour * 60) + now.Minute) * 60000;
-            sequence += (now.Second * 1000) + now.Millisecond;
-            return sequence;
-        }
-        #endregion
+            int slept = 0;
+            TraceEventSession session = TraceEventSession.GetActiveSession(sessionName);
 
-        #region IDisposable
-        public void Dispose()
-        {
-            this.Dispose(true);
-        }
-
-        private void Dispose(bool disposing)
-        {
-            if (disposing && this.Logger != null)
+            while ((open ? session == null : session != null) && slept < MaxWaitForSessionChange)
             {
-                (this.Logger as IDisposable).Dispose();
-                this.Logger = null;
+                const int sleepFor = MaxWaitForSessionChange / 10;
+                Thread.Sleep(sleepFor);
+                slept += sleepFor;
+                session = TraceEventSession.GetActiveSession(sessionName);
             }
+
+            return (open ? session != null : session == null);
         }
-        #endregion
     }
 
     /// <summary>
@@ -1359,7 +1230,11 @@ namespace Microsoft.Diagnostics.Tracing.Logging
     /// </summary>
     public sealed class NetworkLogger : EventListenerDispatcher
     {
-        #region Public
+        private readonly MemoryStream serializationBuffer = new MemoryStream();
+        private readonly DataContractSerializer serializer = new DataContractSerializer(typeof(ETWEvent));
+
+        private readonly Uri serverUri;
+
         /// <summary>
         /// Ctor
         /// </summary>
@@ -1380,9 +1255,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging
             this.serverUri = new Uri(string.Format("http://{0}:{1}", hostname, port));
             InternalLogger.Write.LoggerDestinationOpened(this.GetType().ToString(), this.serverUri.ToString());
         }
-        #endregion
 
-        #region IDisposable
         protected override void Dispose(bool disposing)
         {
             if (disposing)
@@ -1390,20 +1263,12 @@ namespace Microsoft.Diagnostics.Tracing.Logging
                 InternalLogger.Write.LoggerDestinationClosed(this.GetType().ToString(), this.serverUri.ToString());
             }
         }
-        #endregion
 
-        #region Private
-        private readonly Uri serverUri;
-        private readonly DataContractSerializer serializer = new DataContractSerializer(typeof(ETWEvent));
-        private readonly MemoryStream serializationBuffer = new MemoryStream();
-        #endregion
-
-        #region EventListenerDispatcher
         public override void Write(ETWEvent ev)
         {
             try
             {
-                WebRequest request = WebRequest.Create(this.serverUri);
+                var request = WebRequest.Create(this.serverUri);
                 request.Method = WebRequestMethods.Http.Post;
                 request.ContentType = "text/xml";
 
@@ -1473,7 +1338,6 @@ namespace Microsoft.Diagnostics.Tracing.Logging
             public byte[] PostData;
             public WebRequest WebRequest;
         }
-        #endregion
     }
     #endregion Loggers
 }

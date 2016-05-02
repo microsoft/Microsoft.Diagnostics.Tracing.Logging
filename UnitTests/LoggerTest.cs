@@ -225,7 +225,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             Assert.AreNotEqual(goodID, skipID); // oh paranoia how I love.. loathe.. like thee.
 
             LogManager.Start();
-            MemoryLogger memoryLog = LogManager.CreateMemoryLogger();
+            MemoryLogger memoryLog = new MemoryLogger(new MemoryStream());
 
             memoryLog.SubscribeToEvents(TestLogger.Write, EventLevel.Verbose);
             memoryLog.FormatOptions = TextLogFormatOptions.ShowActivityID; // no timestamps please
@@ -298,7 +298,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
         {
             const string activityID = "d00dfeedbeeffeedbeefd00dfeedbeef"; // I implore thee!
             LogManager.Start();
-            MemoryLogger memoryLog = LogManager.CreateMemoryLogger();
+            var memoryLog = new MemoryLogger();
 
             memoryLog.FormatOptions &= ~TextLogFormatOptions.ProcessAndThreadData;
 
@@ -367,7 +367,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
         public void BasicTextWriting()
         {
             LogManager.Start();
-            MemoryLogger memoryLog = LogManager.CreateMemoryLogger();
+            var memoryLog = new MemoryLogger();
 
             memoryLog.SubscribeToEvents(TestLogger.Write, EventLevel.Verbose);
             TestLogger.Write.String("first message");
@@ -409,7 +409,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
         public void DisabledFlag()
         {
             LogManager.Start();
-            MemoryLogger memoryLog = LogManager.CreateMemoryLogger();
+            var memoryLog = new MemoryLogger();
 
             memoryLog.SubscribeToEvents(TestLogger.Write, EventLevel.Verbose);
             TestLogger.Write.String("bacon");
@@ -441,7 +441,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
         public void Filtering()
         {
             LogManager.Start();
-            MemoryLogger memoryLog = LogManager.CreateMemoryLogger();
+            var memoryLog = new MemoryLogger();
 
             memoryLog.SubscribeToEvents(TestLogger.Write, EventLevel.Verbose);
             TestLogger.Write.String("first message");
@@ -461,7 +461,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             }
             memoryLog.Dispose();
 
-            memoryLog = LogManager.CreateMemoryLogger();
+            memoryLog = new MemoryLogger();
             memoryLog.SubscribeToEvents(TestLogger.Write, EventLevel.Verbose);
             memoryLog.AddRegexFilter("first");
             TestLogger.Write.String("first message");
@@ -483,7 +483,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             }
             memoryLog.Dispose();
 
-            memoryLog = LogManager.CreateMemoryLogger();
+            memoryLog = new MemoryLogger();
             memoryLog.SubscribeToEvents(TestLogger.Write, EventLevel.Verbose);
             memoryLog.AddRegexFilter("BaCoN"); // filter for bacon, ensure REs are not case sensitive.
             TestLogger.Write.String("first message");
@@ -511,7 +511,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
         public void NamedArguments()
         {
             LogManager.Start();
-            MemoryLogger memoryLog = LogManager.CreateMemoryLogger();
+            var memoryLog = new MemoryLogger();
 
             memoryLog.SubscribeToEvents(TestLogger.Write, EventLevel.Verbose);
             memoryLog.FormatOptions &= ~TextLogFormatOptions.ProcessAndThreadData;
@@ -541,39 +541,37 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
         {
             // should be None on shutdown
             LogManager.Shutdown();
-            Assert.AreEqual(AllowEtwLoggingValues.None, LogManager.AllowEtwLogging);
+            Assert.AreEqual(Configuration.AllowEtwLoggingValues.None, LogManager.Configuration.AllowEtwLogging);
 
             LogManager.Start();
-            Assert.AreNotEqual(AllowEtwLoggingValues.None, LogManager.AllowEtwLogging);
+            Assert.AreNotEqual(Configuration.AllowEtwLoggingValues.None, LogManager.Configuration.AllowEtwLogging);
             LogManager.Shutdown();
 
             // If we give it a value the value must persist
-            LogManager.AllowEtwLogging = AllowEtwLoggingValues.Enabled;
+            LogManager.Configuration.AllowEtwLogging = Configuration.AllowEtwLoggingValues.Enabled;
             LogManager.Start();
-            Assert.AreEqual(AllowEtwLoggingValues.Enabled, LogManager.AllowEtwLogging);
+            Assert.AreEqual(Configuration.AllowEtwLoggingValues.Enabled, LogManager.Configuration.AllowEtwLogging);
             LogManager.Shutdown();
-            Assert.AreEqual(AllowEtwLoggingValues.None, LogManager.AllowEtwLogging);
-            LogManager.AllowEtwLogging = AllowEtwLoggingValues.Disabled;
+            Assert.AreEqual(Configuration.AllowEtwLoggingValues.None, LogManager.Configuration.AllowEtwLogging);
+            LogManager.Configuration.AllowEtwLogging = Configuration.AllowEtwLoggingValues.Disabled;
             LogManager.Start();
-            Assert.AreEqual(AllowEtwLoggingValues.Disabled, LogManager.AllowEtwLogging);
+            Assert.AreEqual(Configuration.AllowEtwLoggingValues.Disabled, LogManager.Configuration.AllowEtwLogging);
             LogManager.Shutdown();
-            Assert.AreEqual(AllowEtwLoggingValues.None, LogManager.AllowEtwLogging);
+            Assert.AreEqual(Configuration.AllowEtwLoggingValues.None, LogManager.Configuration.AllowEtwLogging);
 
             // Okay, now make sure if we give it config that it does override for us
-            const string config = @"
-<loggers>
-  <log name=""etwLogger"" type=""etl"">
-    <source name=""Microsoft.Diagnostics.Tracing.Logging"" />
-  </log>
-</loggers>";
-            LogManager.AllowEtwLogging = AllowEtwLoggingValues.Disabled;
+            var logConfig =
+                new LogConfiguration("etwLogger", LogType.EventTracing,
+                                     new[] {new EventProviderSubscription(InternalLogger.Write)});
+            var config = new Configuration(new[] { logConfig, });
+            LogManager.Configuration.AllowEtwLogging = Configuration.AllowEtwLoggingValues.Disabled;
             LogManager.Start();
-            Assert.IsTrue(LogManager.SetConfiguration(config));
+            LogManager.SetConfiguration(config);
             Assert.AreEqual(1, LogManager.singleton.fileLoggers.Count);
 
-            var theLogger = LogManager.GetFileLogger("etwLogger") as ETLFileLogger;
+            var theLogger = LogManager.GetLogger<ETLFileLogger>("etwLogger");
             Assert.IsNull(theLogger);
-            var theRealLogger = LogManager.GetFileLogger("etwLogger") as TextFileLogger;
+            var theRealLogger = LogManager.GetLogger<TextFileLogger>("etwLogger");
             Assert.IsNotNull(theRealLogger);
             string filename = Path.GetFileName(theRealLogger.Filename);
             Assert.AreEqual(filename, "etwLogger.log");
@@ -585,21 +583,22 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
         public void TestBufferSizeLimits()
         {
             LogManager.Start();
-            LogManager.SetConfiguration(null);
+            LogManager.SetConfiguration((Configuration)null);
 
-            IEventLogger logger = LogManager.CreateTextLogger("min", ".", LogManager.MinFileBufferSizeMB);
-            Assert.IsNotNull(logger);
-            LogManager.DestroyLogger(logger);
-            logger = LogManager.CreateTextLogger("max", ".", LogManager.MaxFileBufferSizeMB);
-            Assert.IsNotNull(logger);
-            LogManager.DestroyLogger(logger);
-
-            logger = LogManager.CreateETWLogger("min", ".", LogManager.MinFileBufferSizeMB);
-            Assert.IsNotNull(logger);
-            LogManager.DestroyLogger(logger);
-            logger = LogManager.CreateETWLogger("max", ".", LogManager.MaxFileBufferSizeMB);
-            Assert.IsNotNull(logger);
-            LogManager.DestroyLogger(logger);
+            foreach (var type in new[] {LogType.Text, LogType.EventTracing})
+            {
+                foreach (var bufferSize in new[] {LogManager.MinLogBufferSizeMB, LogManager.MaxLogBufferSizeMB})
+                {
+                    IEventLogger logger =
+                        LogManager.CreateLogger(new LogConfiguration("test", type, LogManager.DefaultSubscriptions)
+                                                {
+                                                    Directory = ".",
+                                                    BufferSizeMB = bufferSize,
+                                                });
+                    Assert.IsNotNull(logger);
+                    LogManager.DestroyLogger(logger);
+                }
+            }
 
             LogManager.Shutdown();
         }
@@ -612,18 +611,27 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             File.Delete(Path.Combine(root, "kwd1.log"));
             File.Delete(Path.Combine(root, "kwd2.log"));
             File.Delete(Path.Combine(root, "allkwd.log"));
-            Assert.IsTrue(LogManager.SetConfiguration(
-                                                      @"<loggers>
-  <log name=""kwd1"" type=""text"" directory=""."">
-    <source name=""TestLogger"" rotationInterval=""0"" minimumSeverity=""verbose"" keywords=""1"" />
-  </log>
-  <log name=""kwd2"" type=""text"" directory=""."">
-    <source name=""TestLogger"" rotationInterval=""0"" minimumSeverity=""verbose"" keywords=""10"" />
-  </log>
-  <log name=""allkwd"" type=""text"" directory=""."">
-    <source name=""TestLogger"" rotationInterval=""0"" minimumSeverity=""verbose"" keywords=""11"" />
-  </log>
-</loggers>"));
+
+            var logs =
+                new[]
+                {
+                    new LogConfiguration("kwd1", LogType.Text,
+                                         new[]
+                                         {
+                                             new EventProviderSubscription(TestLogger.Write, EventLevel.Verbose, 0x1),
+                                         }),
+                    new LogConfiguration("kwd2", LogType.Text,
+                                         new[]
+                                         {
+                                             new EventProviderSubscription(TestLogger.Write, EventLevel.Verbose, 0x10),
+                                         }),
+                    new LogConfiguration("allkwd", LogType.Text,
+                                         new[]
+                                         {
+                                             new EventProviderSubscription(TestLogger.Write, EventLevel.Verbose, 0x11),
+                                         }),
+                };
+            LogManager.SetConfiguration(new Configuration(logs));
 
             for (int i = 0; i < 10; ++i)
             {
@@ -662,11 +670,15 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             {
                 netListener.SetWaitReceivedEventsCount(eventsToWrite);
                 LogManager.Start();
-                LogManager.SetConfiguration("");
                 LogManager.DefaultRotate = false;
 
-                var logger = LogManager.CreateNetworkLogger("NetLog", IPAddress.Loopback.ToString(), port);
-                logger.SubscribeToEvents(TestLogger.Write, EventLevel.Verbose);
+                var subs = new[] {new EventProviderSubscription(TestLogger.Write, EventLevel.Verbose),};
+                var config = new LogConfiguration("NetLog", LogType.Network, subs)
+                             {
+                                 Hostname = IPAddress.Loopback.ToString(),
+                                 Port = port
+                             };
+                var logger = LogManager.CreateLogger<NetworkLogger>(config);
 
                 for (int i = 0; i < eventsToWrite; ++i)
                 {
@@ -696,7 +708,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             LogManager.Shutdown(); // not needed by us
 
             // set this just to make sure it isn't actually used.
-            LogManager.AllowEtwLogging = AllowEtwLoggingValues.Disabled;
+            LogManager.Configuration.AllowEtwLogging = Configuration.AllowEtwLoggingValues.Disabled;
 
             File.Delete("fakesession.etl");
             var s1 = new TraceEventSession(ETLFileLogger.SessionPrefix + "fakeSession", "fakeSession.etl");
@@ -731,18 +743,23 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
         public void TextFiles()
         {
             LogManager.Start();
-            LogManager.SetConfiguration("");
             LogManager.DefaultRotate = false;
 
             const string logFilename = "testlog.log";
             string fullFilename = Path.Combine(LogManager.DefaultDirectory, logFilename);
             File.Delete(fullFilename);
-            IEventLogger logger = LogManager.CreateTextLogger(Path.GetFileNameWithoutExtension(logFilename), ".");
+            IEventLogger logger =
+                LogManager.CreateLogger(new LogConfiguration(Path.GetFileNameWithoutExtension(logFilename), LogType.Text,
+                                                             LogManager.DefaultSubscriptions)
+                                        {Directory = "."});
             Assert.IsTrue(File.Exists(fullFilename));
             LogManager.DestroyLogger(logger);
             Assert.IsFalse(File.Exists(fullFilename)); // should delete empty files
 
-            logger = LogManager.CreateTextLogger(Path.GetFileNameWithoutExtension(logFilename), ".");
+            logger =
+                LogManager.CreateLogger(new LogConfiguration(Path.GetFileNameWithoutExtension(logFilename), LogType.Text,
+                                                             LogManager.DefaultSubscriptions)
+                                        {Directory = "."});
             logger.SubscribeToEvents(TestLogger.Write, EventLevel.Verbose);
             const int linesToWrite = 10;
             for (int i = 0; i < linesToWrite; ++i)
@@ -754,7 +771,10 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             Assert.AreEqual(linesToWrite, CountFileLines(fullFilename));
 
             // we should append on re-open
-            logger = LogManager.CreateTextLogger(Path.GetFileNameWithoutExtension(logFilename), ".");
+            var subs = new[] {new EventProviderSubscription(TestLogger.Write, EventLevel.Verbose),};
+            var config = new LogConfiguration(Path.GetFileNameWithoutExtension(logFilename), LogType.Text, subs)
+                         {Directory = "."};
+            logger = LogManager.CreateLogger(config);
             logger.SubscribeToEvents(TestLogger.Write, EventLevel.Verbose);
             const int moreLinesToWrite = 42;
             for (int i = 0; i < moreLinesToWrite; ++i)
@@ -770,7 +790,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
         public void Timestamps()
         {
             LogManager.Start();
-            MemoryLogger memoryLog = LogManager.CreateMemoryLogger();
+            var memoryLog = new MemoryLogger();
 
             memoryLog.SubscribeToEvents(TestLogger.Write, EventLevel.Verbose);
             memoryLog.FormatOptions &= ~TextLogFormatOptions.ProcessAndThreadData;

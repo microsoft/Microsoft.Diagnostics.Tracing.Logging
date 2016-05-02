@@ -109,8 +109,8 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
         private string WriteTestFile(string logFilename)
         {
             LogManager.Start();
-            LogManager.SetConfiguration(null);
-            LogManager.AllowEtwLogging = AllowEtwLoggingValues.Enabled;
+            LogManager.SetConfiguration((Configuration)null);
+            LogManager.Configuration.AllowEtwLogging = Configuration.AllowEtwLoggingValues.Enabled;
             string fullFilename = Path.Combine(LogManager.DefaultDirectory, logFilename);
             try
             {
@@ -118,10 +118,13 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             }
             catch (DirectoryNotFoundException) { }
 
-            string sessionName = Path.GetFileNameWithoutExtension(logFilename);
-            IEventLogger logger = LogManager.CreateETWLogger(sessionName, ".");
+            var sName = Path.GetFileNameWithoutExtension(logFilename);
+            var subs = new[] {new EventProviderSubscription(TestLogger.Write.Guid, EventLevel.Verbose)};
+            var config = new LogConfiguration(sName, LogType.EventTracing, subs)
+                         {Directory = "."};
+            IEventLogger logger = LogManager.CreateLogger<ETLFileLogger>(config);
             logger.SubscribeToEvents(TestLogger.Write.Guid, EventLevel.Verbose);
-            this.sessionName = ETLFileLogger.SessionPrefix + sessionName;
+            this.sessionName = ETLFileLogger.SessionPrefix + sName;
             while (TraceEventSession.GetActiveSession(this.sessionName) == null)
             {
                 // Ensure session starts...
@@ -328,8 +331,8 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             var resultFiles = new List<string>();
 
             LogManager.Start();
-            LogManager.SetConfiguration(null);
-            LogManager.AllowEtwLogging = AllowEtwLoggingValues.Enabled;
+            LogManager.SetConfiguration((Configuration)null);
+            LogManager.Configuration.AllowEtwLogging = Configuration.AllowEtwLoggingValues.Enabled;
             string currentSessionName = null;
             ETLFileLogger logger = null;
             foreach (var logFilename in files)
@@ -347,7 +350,16 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
                 }
                 if (logger == null)
                 {
-                    logger = LogManager.CreateETWLogger(currentSessionName, ".") as ETLFileLogger;
+                    var logConfig = new LogConfiguration(currentSessionName, LogType.EventTracing,
+                                                         new[]
+                                                         {
+                                                             new EventProviderSubscription(TestLogger.Write,
+                                                                                           EventLevel.Verbose),
+                                                         })
+                                    {
+                                        Directory = "."
+                                    };
+                    logger = LogManager.CreateLogger<ETLFileLogger>(logConfig);
                     logger.SubscribeToEvents(TestLogger.Write.Guid, EventLevel.Verbose);
                     while (TraceEventSession.GetActiveSession(ETLFileLogger.SessionPrefix + currentSessionName) == null)
                     {

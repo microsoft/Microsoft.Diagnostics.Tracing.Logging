@@ -2,18 +2,25 @@
 
 Each EventSource provider (and every ETW provider) comes with an associated GUID which is known as its
 provider ID. This is the recommended way to dictate which providers/sources appear in your log files. The
-logging library framework provides both APIs and a simple XML-based configuration syntax for arranging the
-logging of data. The APIs are described with in-assembly documentation. The XML format is described below
-and is the recommended way to configure logging for complex applications.
+logging library framework provides both APIs and a simple JSON-based configuration syntax for arranging the
+logging of data. The APIs are described with in-assembly documentation. The JSON objects are described below
+and are the recommended way to configure logging for complex applications.
 
 ## Configurating individual logs
 
-When providing configuration to the logger you will be expected to provider an XML document with zero or
-more `<log>` directives attached to the root of the document. Each `<log>` directive supports the following
-tags:
+When providing configuration to the logger you will be expected to provider JSON document with one or
+more `LogConfiguration` objects attached to an array with the name `logs` (see below for examples).
+Each `LogConfiguration` object has the following properties:
 
 * name (required, except for console): the base name of this log. This is used as the prefix for the log
-  files themselves.
+  files themselves in the case of files.
+* type (required): the type of log file to write. Supported types are:
+  * `text`: a text file log
+  * `etw`: a Windows ETW log.
+  * `console`: a singleton logger which emits messages to the console.
+  * `network`: a logger which emits XML-serialized messages to a remote endpoint [EXPERIMENTAL]
+* sources (required): an array of `EventProviderSubscription` objects which provide sources for the log. At
+  least one source is required to be in the array.
 * bufferSizeMB (optional): The desired minimum buffer size for the log. For text files there is only one
   buffer. For ETL files there are at minimum two buffers (see
   [this page](http://msdn.microsoft.com/en-us/library/aa363784%28VS.85%29.aspx) -- specifically the
@@ -40,17 +47,17 @@ tags:
   time the manager is initialized.
 * rotationInterval (optional): the frequency (in seconds) to rotate log files. If this is not specified the
   manager may or may not rotate files, depending on how it has been configured at runtime.
-* type (optional, except for console): the type of log file to write. Supported types are `text`, `etl`
-  (ETW binary format) , and `console`. If this is not specified then the default of `text` will be used.
 * timestampLocal (optional): Whether the timestamp used in a file configured to rotate should use local
   time. Defaults to false (filename timestamps use UTC). If you use timestampLocal and supply your own
   filename template you should be sure to include the timezone information in that template, or you may lose
   data during daylight savings changes. If you don't specify a custom template this is handled for you.
+* filters (optional): an array of regular expression strings which are used to filter log output. Only valid
+  for `text` and `console` type logs.
 
 ## Configuring data sources for each individual log
 
-Within each `<log>` directive one or more `<source>` directives should exist. Each `<source>` directive
-supports the following attributes:
+Within each `LogConfiguration` object one or more `EventProviderSubscription` objects should exist. Each `EventProviderSubscrption` object
+supports the following properties:
 
 * name (required if providerID is not set): The name of the EventSource class which will emit events.
   Note that this is the less preferable way to specify which EventSource you want to use. In particular this
@@ -67,9 +74,9 @@ supports the following attributes:
 
 ## Configuring filtering for text-based logs
 
-Both text file and console type logs can be filtered via regular expression, in addition to filtering based
-on keyword/severity at the individual provider level. This can be accomplished by using the `<filter>` tag
-to wrap a regular expression filter. A single log can have any number of filters and, if a formatted message
+Both `text` and `console` type logs can be filtered via regular expression, in addition to filtering based
+on keyword/severity at the individual provider level. This can be accomplished by using the `filters` property
+to wrap one or more regular expression filters. A single log can have any number of filters and, if a formatted message
 matches any one, it will be emitted. See below for an example.
 
 ## Configuring of Console Logging
@@ -82,28 +89,30 @@ sense only in the context of file-backed logging.
 
 Currently Windows requires process elevation to establish kernel-mode ETW logging sessions. By default the
 library will determine whether sessions can be safely established and, if they cannot, will downgrade from
-ETW to text based logs. This behavior can be changed using the `etwlogging` tag within the `loggers` area.
-E.g. `<etwlogging enabled='true' />` will force the logger to attempt to establish ETW sessions even if it
+ETW to text based logs. This behavior can be changed using the `etwlogging` property at the root of the JSON
+configuration. E.g. `etwLogging:true` will force the logger to attempt to establish ETW sessions even if it
 does not appear to be safe to do so. Conversely setting this to 'false' will convert all `etl` type sessions
 to `text`.
 
 ## Sample Configuration
 
-    <loggers>   <!-- Create an ETL log which rotates every ten minutes -->
-      <log name="myLog" rotationInterval="600" type="etl">
-        <!-- Consume events from the Microsoft.Diagnostics.Tracing.Logging event source at warning or higher severity -->
-        <source name="Microsoft-Diagnostics-Tracing-Logging" minimumSeverity="Warning" />
-        <!-- Consume events from a custom provider at Informational or higher severity -->
-        <source providerID="{SOME GUID HERE}" />
-      </log>
-      <!-- Create a text log which does not rotate -->
-      <log name="debugStream" type="text">
-        <!-- Consume all events from a custom provider -->
-        <source providerID="{SOME GUID HERE}" minimumSeverity="Verbose" />
-      </log>
-      <!-- Modify the console log to look for bacon -->
-      <log type="console">
-        <source name="pig" />
-        <filter>bacon</filter>
-      </log>
-    </loggers>
+    {"logs":[
+      // Create an ETL log which rotates every ten minutes
+      {"name":"myLog", "type":"etw", "rotationInterval":600, 
+       "sources":[
+                  // Consume events from the Microsoft.Diagnostics.Tracing.Logging event source at warning or higher severity
+                  {"name":"Microsoft-Diagnostics-Tracing-Logging", "minimumSeverity":"warning"},
+                  // Consume events from a custom provider at Informational or higher severity
+                  {"providerID":"{SOME GUID HERE}"}]
+      },
+      // Create a text log which does not rotate
+      {"name":"debugStream", "type":"text",
+       // Consume all events from a custom provider
+       "sources":[{"providerID":"{SOME GUID HERE}", "minimumSeverity":"verbose"}]
+      },
+      // Modify the console log to look for bacon
+      {"type":"console",
+       "sources":[{"name":"pig"}],
+       "filters":["bacon"]
+      }]
+    }

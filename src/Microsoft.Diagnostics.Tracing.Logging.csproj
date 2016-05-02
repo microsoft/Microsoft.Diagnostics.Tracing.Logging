@@ -56,9 +56,11 @@
     <Compile Include="ETWFileProcessor.cs" />
     <Compile Include="ETWProcessor.cs" />
     <Compile Include="ETWRealtimeProcessor.cs" />
+    <Compile Include="EventProviderSubscription.cs" />
     <Compile Include="Events.cs" />
     <Compile Include="EventSourceCatalog.cs" />
     <Compile Include="ExpiringCompositeEventCollection.cs" />
+    <Compile Include="LogConfiguration.cs" />
     <Compile Include="Logger.cs" />
     <Compile Include="Manager.cs" />
     <Compile Include="MockETWProcessor.cs" />
