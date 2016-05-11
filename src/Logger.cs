@@ -33,6 +33,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging
     using System.Linq;
     using System.Net;
     using System.Runtime.Serialization;
+    using System.Security;
     using System.Text;
     using System.Text.RegularExpressions;
     using System.Threading;
@@ -663,8 +664,14 @@ namespace Microsoft.Diagnostics.Tracing.Logging
         private readonly string directoryName;
         private readonly string fileExtension;
         private readonly LogType logType;
+        private readonly TimeSpan maximumAge;
+        private readonly long maximumSize;
+        private readonly SortedList<DateTime, LogInfo> existingFiles = new SortedList<DateTime, LogInfo>();
 
         private string currentFilename;
+        private long currentSizeBytes;
+        private DateTime oldestFileTimestamp = DateTime.MaxValue;
+        private DateTime newestFileTimestamp = DateTime.MinValue;
         private DateTime intervalEnd;
         private DateTime intervalStart;
 
@@ -672,13 +679,14 @@ namespace Microsoft.Diagnostics.Tracing.Logging
         /// Constructs a manager for a file-backed logger.
         /// </summary>
         /// <param name="configuration">Configuration for the logger.</param>
+        /// <param name="utcStartTime">Start time for log files (UTC).</param>
         /// <remarks>
         /// Callers are expected to call CheckedRotate() periodically to cause file rotation to occur as desired.
         /// If rotationInterval is set to 0 the file will not be rotated and the filename will not contain timestamps.
         /// </remarks>
         [SuppressMessage("Microsoft.Reliability", "CA2000:Dispose objects before losing scope",
             Justification = "We hold the logger internally and so do not want to dispose it")]
-        public FileBackedLogger(LogConfiguration configuration)
+        public FileBackedLogger(LogConfiguration configuration, DateTime utcStartTime)
         {
             this.directoryName = Path.GetFullPath(configuration.Directory);
             if (!Directory.Exists(this.directoryName))
@@ -691,8 +699,10 @@ namespace Microsoft.Diagnostics.Tracing.Logging
             this.logType = configuration.Type;
             this.RotationInterval = configuration.RotationInterval;
             this.TimestampLocal = configuration.TimestampLocal;
+            this.maximumAge = configuration.MaximumAge;
+            this.maximumSize = configuration.MaximumSize;
 
-            var now = this.AdjustUtcTime(DateTime.UtcNow);
+            var now = this.AdjustUtcTime(utcStartTime);
 
             switch (this.logType)
             {
@@ -714,11 +724,14 @@ namespace Microsoft.Diagnostics.Tracing.Logging
                 this.Logger = new ETLFileLogger(this.baseFilename, this.currentFilename, configuration.BufferSizeMB);
                 break;
             default:
-                throw new ArgumentException("log type " + logType + " not implemented", "logType");
+                throw new ArgumentException($"log type {this.logType} not implemented", nameof(configuration));
             }
 
+            this.SetRetentionData();
+
             InternalLogger.Write.CreateFileDestination(this.baseFilename, this.directoryName, this.RotationInterval,
-                                                       configuration.FilenameTemplate);
+                                                       configuration.FilenameTemplate,
+                                                       (long)this.maximumAge.TotalSeconds, this.maximumSize);
         }
 
         // we don't want users to be able to tweak file/dir names, only filtering.
@@ -763,35 +776,47 @@ namespace Microsoft.Diagnostics.Tracing.Logging
         {
             now = this.AdjustUtcTime(now);
 
+            var previousFilename = this.currentFilename;
             this.UpdateCurrentFilename(now);
             this.Logger.Filename = this.currentFilename;
+            this.AddExistingFile(previousFilename);
         }
 
         /// <summary>
         /// Ensure a filename template formats correctly and generates a valid filename
         /// </summary>
         /// <param name="template">The template to validate</param>
+        /// <param name="rotationInterval">The interval at which rotation will occur (if any)</param>
         /// <returns>true if the template is valid, false otherwise</returns>
-        public static bool IsValidFilenameTemplate(string template)
+        public static bool IsValidFilenameTemplate(string template, TimeSpan rotationInterval)
         {
-            const string baseName = "history";
-            var fourScoreEtc = new DateTime(1776, 7, 4);
-            var gAddress = new DateTime(1863, 11, 19);
+            const string baseName = "hamilton"; // do not throw away your shot
             const string someMachine = "ORTHANC";
             const long jenny = 8675309;
 
+            if (!template.Contains("{0}"))
+            {
+                return false; // base filename MUST be represented without any goop in the formatting.
+            }
+
             try
             {
-                if (!template.Contains("{0}"))
-                {
-                    return false; // base filename MUST be represented without any goop in the formatting.
-                }
-
-                string generatedName = string.Format(template, baseName, fourScoreEtc, gAddress, someMachine, jenny);
+                var generatedName = CreateFilename(template, baseName, DateTime.MinValue, DateTime.MaxValue, someMachine, jenny);
                 if (generatedName.IndexOfAny(Path.GetInvalidFileNameChars()) != -1)
-                {
+                 {
                     return false;
-                }
+                 }
+
+                if (rotationInterval != TimeSpan.Zero)
+                 {
+                    // changing the time by the desired must change the filename.
+                    var rotatedName = CreateFilename(template, baseName, DateTime.MinValue + rotationInterval,
+                                                     DateTime.MaxValue, someMachine, jenny);
+                    if (generatedName.Equals(rotatedName))
+                    {
+                        return false;
+                    }
+                 }
             }
             catch (FormatException)
             {
@@ -799,6 +824,70 @@ namespace Microsoft.Diagnostics.Tracing.Logging
             }
             return true;
         }
+
+        /// <summary>^M
+        /// Determine if a given template is valid when combined with log retention rules.^M
+        /// </summary>^M
+        /// <param name="template">template to examine.</param>^M
+        /// <returns>True if the template is valid for retention management.</returns>
+        public static bool IsFilenameTemplateValidForRetention(string template)
+        {
+            const string baseName = "washington";
+            if (!template.StartsWith("{0}"))
+            {
+                return false;
+            }
+
+            // extra parentheses seem to be required by the parser, even though they appear redundant. Leave 'em.
+            if ((CreateFilename(template, baseName, DateTime.MinValue, DateTime.MaxValue, string.Empty, 0).Length) !=
+                (CreateFilename(template, baseName, DateTime.MinValue, DateTime.MaxValue, baseName, 0).Length))
+            {
+                return false;
+            }
+
+            if ((CreateFilename(template, baseName, DateTime.MinValue, DateTime.MaxValue, string.Empty, 0).Length) !=
+                (CreateFilename(template, baseName, DateTime.MinValue, DateTime.MaxValue, string.Empty, 42).Length))
+            {
+                return false;
+            }
+
+            var variableDates = new[]
+                                {
+                                    new DateTime(1, 1, 1, 0, 0, 0),
+                                    new DateTime(2001, 1, 1, 0, 0, 0),
+                                    new DateTime(2001, 10, 1, 0, 0, 0),
+                                    new DateTime(2001, 10, 10, 0, 0, 0),
+                                    new DateTime(2001, 10, 10, 10, 0, 0),
+                                    new DateTime(2001, 10, 10, 10, 10, 0),
+                                    new DateTime(2001, 10, 10, 10, 10, 10),
+                                    new DateTime(2001, 10, 10, 10, 10, 10, 10),
+                                };
+
+            var len = CreateFilename(template, baseName, variableDates[0], DateTime.MaxValue, string.Empty, 0).Length;
+            if (len != CreateFilename(template, baseName, DateTime.MinValue, variableDates[0], string.Empty, 0).Length)
+            {
+                return false;
+            }
+
+            for (var d = 1; d < variableDates.Length; ++d)
+            {
+                if (   len != CreateFilename(template, baseName, variableDates[d], DateTime.MaxValue, string.Empty, 0).Length
+                    || len != CreateFilename(template, baseName, DateTime.MinValue, variableDates[d], string.Empty, 0).Length)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private struct LogInfo
+        {
+            public string Filename;
+            public long SizeBytes;
+        }
+
+        private bool HasRetentionPolicy => this.RotationInterval != 0 && (this.maximumSize != 0 || this.maximumAge > TimeSpan.Zero);
 
         /// <summary>
         /// Adjust the given 'now' value from UTC to local time if we need that.
@@ -820,7 +909,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging
             string newFilename;
             if (this.RotationInterval <= 0)
             {
-                this.intervalStart = this.intervalEnd = new DateTime(0);
+                this.intervalStart = this.intervalEnd = DateTime.MinValue;
                 newFilename = this.baseFilename + this.fileExtension;
             }
             else
@@ -831,8 +920,8 @@ namespace Microsoft.Diagnostics.Tracing.Logging
 
                 this.intervalStart = new DateTime(now.Ticks);
                 this.intervalEnd = new DateTime(endTicks);
-                newFilename = string.Format(this.FilenameTemplate, this.baseFilename, this.intervalStart,
-                                            this.intervalEnd, Environment.MachineName, MillisecondsSinceMidnight(now));
+                newFilename = CreateFilename(this.FilenameTemplate, this.baseFilename, this.intervalStart,
+                                             this.intervalEnd, Environment.MachineName, MillisecondsSinceMidnight(now));
             }
 
             string newFileName = Path.Combine(this.directoryName, newFilename);
@@ -841,19 +930,114 @@ namespace Microsoft.Diagnostics.Tracing.Logging
                                                          this.intervalEnd.Ticks);
         }
 
+        private static string CreateFilename(string template, string baseFilename, DateTime start, DateTime end,
+                                             string machineName, long millisecondsSinceMidnight)
+        {
+            return string.Format(template, baseFilename, start, end, machineName, millisecondsSinceMidnight);
+        }
+
         /// <summary>
-        /// Turn a timestamp into a "sequence number"-esque value for granular indication of log starts
+        /// Turn a timestamp into a "sequence number"-esque value for granular indication of log starts.
         /// </summary>
-        /// <param name="now">The current time</param>
-        /// <returns>The number of milliseconds since midnight</returns>
+        /// <param name="now">The current time.</param>
+        /// <returns>The number of milliseconds since midnight.</returns>
         /// <remarks>
-        /// This partner-specific hack should NOT exist. All effort should be made to get this out of the code.
+        /// This exists for a specific consumer group in Bing and its use is not recommended.
         /// </remarks>
         private static long MillisecondsSinceMidnight(DateTime now)
         {
             long sequence = ((now.Hour * 60) + now.Minute) * 60000;
             sequence += (now.Second * 1000) + now.Millisecond;
             return sequence;
+        }
+
+        private void SetRetentionData()
+        {
+            if (!this.HasRetentionPolicy)
+            {
+                return;
+            }
+
+            var someFilename = CreateFilename(this.FilenameTemplate, this.baseFilename, DateTime.MinValue,
+                                              DateTime.MaxValue, string.Empty, 0);
+            var patternLength =
+                someFilename.Substring(this.baseFilename.Length,
+                                       someFilename.Length - this.baseFilename.Length - this.fileExtension.Length)
+                            .Length;
+            var pattern = this.baseFilename + new string('?', patternLength) + this.fileExtension;
+
+            foreach (var f in Directory.GetFiles(this.directoryName, pattern, SearchOption.TopDirectoryOnly))
+            {
+                this.AddExistingFile(f);
+            }
+        }
+
+        private void AddExistingFile(string fullFilename)
+        {
+            if (!this.HasRetentionPolicy)
+            {
+                return;
+            }
+
+            FileInfo fileInfo;
+            try
+            {
+                fileInfo = new FileInfo(fullFilename);
+            }
+            catch (Exception e) when (e is SecurityException || e is UnauthorizedAccessException || e is PathTooLongException)
+            {
+                InternalLogger.Write.UnableToCatalogLogFile(fullFilename, e.GetType().ToString(), e.Message);
+                return;
+            }
+
+            if (!fileInfo.Exists)
+            {
+                InternalLogger.Write.UnableToCatalogLogFile(fullFilename, string.Empty, "file does not exist.");
+                return;
+            }
+
+            this.existingFiles.Add(fileInfo.CreationTimeUtc, new LogInfo { Filename = fullFilename, SizeBytes = fileInfo.Length});
+            this.currentSizeBytes += fileInfo.Length;
+            if (fileInfo.CreationTimeUtc > this.newestFileTimestamp)
+            {
+                this.newestFileTimestamp = fileInfo.CreationTimeUtc;
+            }
+            if (fileInfo.CreationTimeUtc < this.oldestFileTimestamp)
+            {
+                this.oldestFileTimestamp = fileInfo.CreationTimeUtc;
+            }
+
+            while (   (this.maximumSize != 0 && this.currentSizeBytes > this.maximumSize)
+                   || (this.maximumAge != TimeSpan.Zero && this.newestFileTimestamp - this.oldestFileTimestamp > this.maximumAge))
+            {
+                // We don't want to expire the only file we currently know about. This can actually violate the user's expectations
+                // although the user may reasonable expect that as well that we leave at least one log behind besides what we
+                // presume to be our currently open log.
+                if (this.existingFiles.Count == 1)
+                {
+                    break;
+                }
+
+                var info = this.existingFiles.Values[0];
+                try
+                {
+                    File.Delete(info.Filename);
+                }
+                catch (Exception e)
+                    when (
+                        e is FileNotFoundException || e is DirectoryNotFoundException ||
+                        e is UnauthorizedAccessException || e is IOException)
+                {
+                    // It could be argued that 'FileNotFound' is not worth logging as a warning (somebody probably cleaned this up for us?)
+                    // but I'm erring on the side of verbosity, and users may wish to know if files are disappearing through other means
+                    // when we don't expect that.
+                    InternalLogger.Write.UnableToDeleteExpiredLogFile(info.Filename, e.GetType().ToString(), e.Message);
+                }
+
+                this.existingFiles.RemoveAt(0);
+                this.currentSizeBytes -= info.SizeBytes;
+                this.oldestFileTimestamp = this.existingFiles.Keys[0];
+            }
         }
 
         private void Dispose(bool disposing)
@@ -923,7 +1107,6 @@ namespace Microsoft.Diagnostics.Tracing.Logging
             if (this.outputFile != null)
             {
                 this.Writer.Flush(); // We must flush to get the actual length
-                long size = this.outputFile.Length;
                 string filename = this.outputFile.Name;
 
                 this.Writer.Dispose();
@@ -932,10 +1115,20 @@ namespace Microsoft.Diagnostics.Tracing.Logging
                 this.outputFile.Close();
                 this.outputFile = null;
 
+                var fileInfo = new FileInfo(filename);
+                long size = fileInfo.Exists ? fileInfo.Length : 0;
                 if (size == 0)
                 {
-                    File.Delete(filename);
-                    InternalLogger.Write.RemovedEmptyFile(filename);
+                    try
+                    {
+                        File.Delete(filename);
+                        InternalLogger.Write.RemovedEmptyFile(filename);
+                    }
+                    // ignore these for now.
+                    catch (Exception e)
+                        when (
+                            e is FileNotFoundException || e is DirectoryNotFoundException ||
+                            e is UnauthorizedAccessException || e is IOException) { }
                 }
 
                 InternalLogger.Write.LoggerDestinationClosed(this.GetType().ToString(), filename);

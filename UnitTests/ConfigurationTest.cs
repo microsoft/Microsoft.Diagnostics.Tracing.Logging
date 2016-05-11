@@ -105,7 +105,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             Assert.Throws<ArgumentException>(() => new Configuration(new LogConfiguration[0]));
 
             var invalidConfig = new LogConfiguration("foo", LogType.Network, LogManager.DefaultSubscriptions);
-            Assert.IsFalse(invalidConfig.IsValid);
+            Assert.Throws<InvalidConfigurationException>(() => invalidConfig.Validate());
             var invalidLogConfigs = new List<LogConfiguration>(validLogConfigs);
             invalidLogConfigs.Add(invalidConfig);
             Assert.Throws<InvalidConfigurationException>(() => new Configuration(invalidLogConfigs));

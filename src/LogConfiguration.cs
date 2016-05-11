@@ -28,6 +28,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging
     using System.Globalization;
     using System.IO;
     using System.Linq;
+    using System.Runtime.InteropServices;
 
     using Newtonsoft.Json;
     using Newtonsoft.Json.Linq;
@@ -161,6 +162,8 @@ namespace Microsoft.Diagnostics.Tracing.Logging
         private IEventLogger logger;
         private ushort port;
         private int rotationInterval;
+        private TimeSpan maximumAge;
+        private long maximumSize;
         private bool? timestampLocal;
         private LogType type;
 
@@ -322,9 +325,10 @@ namespace Microsoft.Diagnostics.Tracing.Logging
                 {
                     throw new InvalidConfigurationException("Filename templates are not valid for non-file loggers.");
                 }
-                if (!FileBackedLogger.IsValidFilenameTemplate(value))
+                // Validate method will be pickier but user may not have set a rotation interval yet.
+                if (!FileBackedLogger.IsValidFilenameTemplate(value, TimeSpan.Zero))
                 {
-                    throw new InvalidConfigurationException($"Filename template '{value}' is invalid.");
+                    throw new InvalidConfigurationException("Filename template is invalid.");
                 }
 
                 this.filenameTemplate = value;
@@ -361,6 +365,50 @@ namespace Microsoft.Diagnostics.Tracing.Logging
                 }
 
                 this.rotationInterval = value;
+            }
+        }
+
+        /// <summary>
+        /// The maximum age of log files for rotated logs.
+        /// </summary>
+        public TimeSpan MaximumAge
+        {
+            get { return this.maximumAge; }
+            set
+            {
+                this.CheckPropertyChange();
+                if (!this.Type.HasFeature(Features.FileBacked))
+                {
+                    throw new InvalidConfigurationException("Maximum ages are not valid for non-file loggers.");
+                }
+                if (value < TimeSpan.Zero)
+                {
+                    throw new InvalidConfigurationException("Cannot set a maximum file age less than zero.");
+                }
+
+                this.maximumAge = value;
+            }
+        }
+
+        /// <summary>
+        /// The maximum size in bytes for rotated log files.
+        /// </summary>
+        public long MaximumSize
+        {
+            get { return this.maximumSize; }
+            set
+            {
+                this.CheckPropertyChange();
+                if (!this.Type.HasFeature(Features.FileBacked))
+                {
+                    throw new InvalidConfigurationException("Maximum sizes are not valid for non-file loggers.");
+                }
+                if (value < 0)
+                {
+                    throw new InvalidConfigurationException("Cannot set a maximum size age less than zero.");
+                }
+
+                this.maximumSize = value;
             }
         }
 
@@ -432,20 +480,48 @@ namespace Microsoft.Diagnostics.Tracing.Logging
         public IEnumerable<EventProviderSubscription> Subscriptions => this.subscriptions;
 
         /// <summary>
-        /// Whether the configuration is complete and usable.
+        /// Validate the full set of configuration. Throws InvalidConfigurationException in the event of invalid
+        /// applied configuration.
         /// </summary>
-        public bool IsValid
+        public void Validate()
         {
-            get
+            if (this.Type == LogType.Network)
             {
-                // XXX: not hugely in love with this design, it is very specific right now to 'Network' type and
-                // isn't true RAII.
-                switch (this.type)
+                if (this.hostname == null)
                 {
-                case LogType.Network:
-                    return (this.hostname != null && this.port > 0);
-                default:
-                    return true;
+                    throw new InvalidConfigurationException($"Log {this.Name} has no hostname set.");
+                }
+                if (this.Port == 0)
+                {
+                    throw new InvalidConfigurationException($"Log {this.Name} has no port set.");
+                }
+            }
+
+            if (this.Type.HasFeature(Features.FileBacked))
+            {
+                if (this.RotationInterval > 0 &&
+                    !FileBackedLogger.IsValidFilenameTemplate(this.FilenameTemplate,
+                                                              TimeSpan.FromSeconds(this.RotationInterval)))
+                {
+                    throw new InvalidConfigurationException(
+                        $"Rotation interval {this.RotationInterval} cannot be used with template {this.FilenameTemplate}.");
+                }
+
+                var retentionPolicySet = (this.MaximumAge > TimeSpan.Zero || this.MaximumSize > 0);
+                if (retentionPolicySet && this.RotationInterval <= 0)
+                {
+                    throw new InvalidConfigurationException(
+                        $"Log {this.Name} has retention configuration but is not rotated.");
+                }
+
+                if (this.MaximumAge > TimeSpan.Zero)
+                {
+                    if (this.MaximumAge < TimeSpan.FromSeconds(this.RotationInterval)
+                        || this.MaximumAge.Ticks % TimeSpan.TicksPerSecond != 0)
+                    {
+                        throw new InvalidConfigurationException(
+                            $"Log {this.Name} has a maximum age which is either shorter than the rotation interval or not evenly divisible by seconds.");
+                    }
                 }
             }
         }
@@ -626,6 +702,8 @@ namespace Microsoft.Diagnostics.Tracing.Logging
             private const string FilenameTemplateProperty = "filenameTemplate";
             private const string TimestampLocalProperty = "timestampLocal";
             private const string RotationIntervalProperty = "rotationInterval";
+            private const string MaximumAgeProperty = "maximumAge";
+            private const string MaximumSizeProperty = "maximumSize";
             private const string HostnameProperty = "hostname";
             private const string PortProperty = "port";
 
@@ -667,6 +745,16 @@ namespace Microsoft.Diagnostics.Tracing.Logging
                 {
                     writer.WritePropertyName(RotationIntervalProperty);
                     writer.WriteValue(log.rotationInterval);
+                }
+                if (log.maximumAge > TimeSpan.Zero)
+                {
+                    writer.WritePropertyName(MaximumAgeProperty);
+                    writer.WriteValue(log.maximumAge);
+                }
+                if (log.maximumSize > 0)
+                {
+                    writer.WritePropertyName(MaximumSizeProperty);
+                    writer.WriteValue(log.maximumSize);
                 }
                 if (log.hostname != null)
                 {
@@ -733,6 +821,14 @@ namespace Microsoft.Diagnostics.Tracing.Logging
                 if (jObject.TryGetValue(RotationIntervalProperty, StringComparison.OrdinalIgnoreCase, out token))
                 {
                     log.RotationInterval = token.Value<int>();
+                }
+                if (jObject.TryGetValue(MaximumAgeProperty, StringComparison.OrdinalIgnoreCase, out token))
+                {
+                    log.MaximumAge = token.Value<TimeSpan>();
+                }
+                if (jObject.TryGetValue(MaximumSizeProperty, StringComparison.OrdinalIgnoreCase, out token))
+                {
+                    log.MaximumSize = token.Value<int>();
                 }
                 if (jObject.TryGetValue(HostnameProperty, StringComparison.OrdinalIgnoreCase, out token))
                 {

@@ -44,7 +44,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
                     Directory = ".",
                     RotationInterval = 300,
                     TimestampLocal = false,
-                }))
+                }, DateTime.UtcNow))
             {
                 using (var localLogger = new FileBackedLogger(
                     new LogConfiguration("loctime", LogType.Text, LogManager.DefaultSubscriptions)
@@ -52,7 +52,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
                         Directory = ".",
                         RotationInterval = 300,
                         TimestampLocal = true,
-                    }))
+                    }, DateTime.UtcNow))
                 {
                     Assert.IsNotNull(utcLogger);
                     utcLogger.CheckedRotate(now);
@@ -102,7 +102,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             try
             {
                 new FileBackedLogger(new LogConfiguration("badlogger", LogType.MemoryBuffer,
-                                                          LogManager.DefaultSubscriptions));
+                                                          LogManager.DefaultSubscriptions), DateTime.UtcNow);
                 Assert.Fail();
             }
             catch (ArgumentException) { }
@@ -113,7 +113,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
                     Directory = Path.GetFullPath("."),
                     RotationInterval = 0,
                     FilenameTemplate = "{0}"
-                }))
+                }, DateTime.UtcNow))
             {
                 Assert.IsNotNull(logger.Logger);
                 Assert.AreEqual(0, logger.RotationInterval);
@@ -169,7 +169,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
                     Directory = ".",
                     RotationInterval = LogManager.MinRotationInterval,
                     TimestampLocal = true,
-                }))
+                }, DateTime.UtcNow))
             {
                 using (var utcTimeLogger = new FileBackedLogger(
                     new LogConfiguration("utctime", LogType.Text, LogManager.DefaultSubscriptions)
@@ -177,7 +177,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
                         Directory = ".",
                         RotationInterval = LogManager.MinRotationInterval,
                         TimestampLocal = false,
-                    }))
+                    }, DateTime.UtcNow))
                 {
                     Assert.AreEqual(localTimeLogger.FilenameTemplate,
                                     LogManager.DefaultLocalTimeFilenameTemplate + FileBackedLogger.TextLogExtension);
@@ -217,7 +217,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
                     new FileBackedLogger(new LogConfiguration("external", LogType.Text, LogManager.DefaultSubscriptions)
                                          {
                                              Directory = "."
-                                         });
+                                         }, DateTime.UtcNow);
                 LogManager.DestroyLogger(externalLogger.Logger);
                 Assert.Fail();
             }

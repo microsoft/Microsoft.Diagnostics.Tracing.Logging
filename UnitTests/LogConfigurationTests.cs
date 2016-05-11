@@ -308,15 +308,15 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
         public void NetworkPropertiesRequiredForValidConfiguration()
         {
             var config = new LogConfiguration("net", LogType.Network, LogManager.DefaultSubscriptions);
-            Assert.IsFalse(config.IsValid);
+            Assert.Throws<InvalidConfigurationException>(() => config.Validate());
             config.Hostname = "foo";
-            Assert.IsFalse(config.IsValid);
+            Assert.Throws<InvalidConfigurationException>(() => config.Validate());
 
             config = new LogConfiguration("net", LogType.Network, LogManager.DefaultSubscriptions);
             config.Port = 5309;
-            Assert.IsFalse(config.IsValid);
+            Assert.Throws<InvalidConfigurationException>(() => config.Validate());
             config.Hostname = "foo";
-            Assert.IsTrue(config.IsValid);
+            Assert.DoesNotThrow(() => config.Validate());
         }
 
         [Test]

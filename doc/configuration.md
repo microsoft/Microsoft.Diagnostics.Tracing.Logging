@@ -29,17 +29,17 @@ Each `LogConfiguration` object has the following properties:
   minimum of 32MB of buffer space is recommended, if not more.
 * filenameTemplate (optional): A template for formatting the filename for files with rotation enabled. The
   default template is `{0}_{1:YYYYMMdd}T{1:HHmmss}Z--{2:HHmmss}Z` for UTC stamps, and
-  `{0}_{1:YYYYMMdd}T{1:HHmmsszz}--{2:HHmmsszz}` for local stamps. Some additional items are also available.
-  Formatting options are:
-  0. The base of the filename. This is the only mandatory part of the template. This is the value of the
-     `name` attribute.
-  1. The starting time of the rotation interval for the log file. This is when the file was opened.
-  2. The ending time of the rotation interval for the log file. This is NOT necessarily when the file was
-     closed (but typically is.)
-  3. The name of the machine the logging is occuring on. Not recommended, provided for a specific partner.
-     May be deprecated. Don't use this.
-  4. The number of milliseconds since UTC midnight. Not recommended, provided for a specific partner. May be
-     deprecated. Don't use this.
+  `{0}_{1:YYYYMMdd}T{1:HHmmsszz}--{2:HHmmsszz}` for local stamps.
+  Some additional items are also available. Formatting options are:
+  * 0: The base of the filename. This is the only mandatory part of the template. This is the value of the
+       `name` attribute.
+  * 1: The starting time of the rotation interval for the log file. This is when the file was opened.
+  * 2: The ending time of the rotation interval for the log file. This is NOT necessarily when the file was
+       closed (but typically is.)
+  * 3: The name of the machine the logging is occuring on. Not recommended, provided for a specific partner.
+       May be deprecated. Don't use this.
+  * 4: The number of milliseconds since UTC midnight. Not recommended, provided for a specific partner. May be
+       deprecated. Don't use this.
 * directory (optional): the directory in which to store log files. If the path is relative it will be
   relative to the default log directory decided upon by the log management API. This path is built by the
   assembly by appending `logs\local` to the $DATADIR environment variable if it exists. If the environment
@@ -51,8 +51,44 @@ Each `LogConfiguration` object has the following properties:
   time. Defaults to false (filename timestamps use UTC). If you use timestampLocal and supply your own
   filename template you should be sure to include the timezone information in that template, or you may lose
   data during daylight savings changes. If you don't specify a custom template this is handled for you.
+* maximumAge (optional): string representing a TimeSpan value indicating the maximum age of the oldest log relative to
+  the newest. File creation time is used in the calculation.
+* maximumSizeMB (optional): Maximum size of all logs in MB before the oldest log(s) will be deleted. Age is
+  determined by file creation time.
 * filters (optional): an array of regular expression strings which are used to filter log output. Only valid
   for `text` and `console` type logs.
+
+### Retention configuration
+Both age and size policies may be applied to the same log. In this case the most aggressive policy
+will win (e.g. if a 28 day retention policy is used but only 20GB of logs are allowed then logs
+newer than 28 days but which cause the total size to exceed 20GB will be deleted).
+
+When using retention the following additional restrictions are applied for valid configuration:
+* Logs must be configured for automatic rotation.
+* The base name of the log must be the first portion of the log file name.
+* Log templates must not use either the hostname or "milliseconds since midnight" format specifiers
+  in their template.
+* Log templates must produce a consistent name length for various times of day / days / etc. In
+  general it is strongly recommended that the default templates be applied but this is not required.
+
+It is theoretically possible even with the above restrictions to create a situation where retention
+mistakenly deletes other logs, though in practice this is very difficult unless the user tries very
+hard to fool the system. We would recommend you don't, if you like your logs anyway. In general use
+cases this should be very safe to use.
+
+Retention adds some additional process cost as a catalogue of all matching files is kept in memory
+and used to quickly determine expiration and perform deletion. The rough cost is the size of the
+filename along with an 8-byte value storing size and another 8-byte value storing creation time.
+For logs with a (fairly typical) length of approximately 40 characters this means 56 bytes per
+entry. The following would be approximate typical per-day sizes at different rotations:
+* One minute: 80KB
+* Five minute: 16KB
+* Ten minute: 8KB
+* One hour: 1KB
+
+Retention will never delete the "second to last" file (that is, the last file not currently in use)
+even if it would violate retention policies. Effectively, the last completed file will always be
+available until the current file is done being processed.
 
 ## Configuring data sources for each individual log
 

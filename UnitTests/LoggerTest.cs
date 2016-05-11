@@ -850,5 +850,182 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             memoryLog.Dispose();
             LogManager.Shutdown();
         }
+
+        [Test]
+        public void TimeBasedRetention()
+        {
+            const string logName = "retention_time_test";
+
+            LogManager.Start();
+            var subscription = new[] {new EventProviderSubscription(TestLogger.Write, EventLevel.Verbose),};
+
+            var config = new LogConfiguration(logName, LogType.Text, subscription)
+                         {
+                             RotationInterval = 86400,
+                             Directory = ".",
+                         };
+            var files = new List<string>();
+            var startTime = new DateTime(1776, 7, 4, 0, 0, 0, DateTimeKind.Utc);
+            var endTime = startTime;
+            const int rotations = 14;
+            using (var log = new FileBackedLogger(config, startTime))
+            {
+                // XXX: this is cumbersome because of the way the file loggers are currently factored, needs fixing
+                // in future refactor.
+                var logger = (TextFileLogger)log.Logger;
+                config.Logger = logger;
+                files.Add(logger.Filename);
+                for (var i = 0; i < rotations; ++i)
+                {
+                    TestLogger.Write.String("some string");
+
+                    endTime = endTime + TimeSpan.FromSeconds(config.RotationInterval);
+                    log.Rotate(endTime);
+                    var newFile = logger.Filename;
+                    Assert.IsFalse(files.Contains(newFile));
+                    files.Add(logger.Filename);
+                }
+                TestLogger.Write.String("last string");
+            }
+
+            Assert.AreEqual(rotations + 1, files.Count);
+            for (var i = 0; i < files.Count; ++i)
+            {
+                // XXX: this is a bit gross but for each file we need to set its creation time manually, in the normal
+                // path we can trust wall time but that doesn't work here.
+                var f = files[i];
+                Assert.IsTrue(File.Exists(f));
+                File.SetCreationTimeUtc(f, startTime + TimeSpan.FromSeconds(config.RotationInterval * i));
+            }
+
+            const int maxDays = rotations / 2;
+            // XXX 2: have to re-create this because of the interplay between config + logger.
+            config = new LogConfiguration(logName, LogType.Text, subscription)
+                     {
+                         RotationInterval = 86400,
+                         Directory = ".",
+                         MaximumAge = TimeSpan.FromDays(maxDays),
+                     };
+            startTime = endTime;
+            using (var log = new FileBackedLogger(config, startTime))
+            {
+                var logger = (TextFileLogger)log.Logger;
+                config.Logger = logger;
+                // expect the first half of 'maxDays' files to be gone.
+                for (var i = 0; i < files.Count; ++i)
+                {
+                    if (i < maxDays)
+                    {
+                        Assert.IsFalse(File.Exists(files[i]));
+                    }
+                    else
+                    {
+                        Assert.IsTrue(File.Exists(files[i]));
+                    }
+                }
+            }
+            LogManager.Shutdown();
+        }
+
+        [Test]
+        public void SizeBasedRetention()
+        {
+            const string logName = "retention_size_test";
+            const int maxSize = 5 * 1024 * 1024;
+            const int stringBytes = 32 * 1024;
+            var bigString = new string('.', stringBytes / 2); // 2 byte characters
+
+            LogManager.Start();
+            var subscription = new[] {new EventProviderSubscription(TestLogger.Write, EventLevel.Verbose),};
+
+            var config = new LogConfiguration(logName, LogType.Text, subscription)
+                         {
+                             RotationInterval = LogManager.MinRotationInterval,
+                             Directory = ".",
+                         };
+            var files = new List<string>();
+            var startTime = new DateTime(1776, 7, 4, 0, 0, 0, DateTimeKind.Utc);
+            var endTime = startTime;
+            const int rotations = (maxSize / stringBytes) * 2;
+            using (var log = new FileBackedLogger(config, startTime))
+            {
+                // XXX: this is cumbersome because of the way the file loggers are currently factored, needs fixing
+                // in future refactor.
+                var logger = (TextFileLogger)log.Logger;
+                config.Logger = logger;
+                files.Add(logger.Filename);
+                for (var i = 0; i < rotations; ++i)
+                {
+                    TestLogger.Write.String(bigString);
+
+                    endTime = endTime + TimeSpan.FromSeconds(config.RotationInterval);
+                    log.Rotate(endTime);
+                    var newFile = logger.Filename;
+                    Assert.IsFalse(files.Contains(newFile));
+                    files.Add(logger.Filename);
+                }
+                TestLogger.Write.String(bigString);
+            }
+
+            long actualSize = 0;
+            Assert.AreEqual(rotations + 1, files.Count);
+            for (var i = 0; i < files.Count; ++i)
+            {
+                // XXX: this is a bit gross but for each file we need to set its creation time manually, in the normal
+                // path we can trust wall time but that doesn't work here.
+                var f = files[i];
+                var info = new FileInfo(f);
+                Assert.IsTrue(info.Exists);
+                actualSize += info.Length;
+                File.SetCreationTimeUtc(f, startTime + TimeSpan.FromSeconds(config.RotationInterval * i));
+            }
+
+            // we want to determine the first file we expect to be gone by counting backwards over the size.
+            long totalSize = 0;
+            int firstRemaining = files.Count;
+            for (var i = files.Count - 1; i >= 0; --i)
+            {
+                var info = new FileInfo(files[i]);
+                totalSize += info.Length;
+                if (totalSize > maxSize)
+                {
+                    firstRemaining = i + 1;
+                    break;
+                }
+            }
+            Assert.AreNotEqual(files.Count, firstRemaining);
+
+            // XXX 2: have to re-create this because of the interplay between config + logger.
+            config = new LogConfiguration(logName, LogType.Text, subscription)
+                     {
+                         RotationInterval = 86400,
+                         Directory = ".",
+                         MaximumSize = maxSize,
+                     };
+            startTime = endTime;
+            using (var log = new FileBackedLogger(config, startTime))
+            {
+                var logger = (TextFileLogger)log.Logger;
+                config.Logger = logger;
+                // Using the first remaining file detected above to ensure files we expected to go away have.
+                long remainingSize = 0;
+                for (var i = 0; i < files.Count; ++i)
+                {
+                    var info = new FileInfo(files[i]);
+                    if (i < firstRemaining)
+                    {
+                        Assert.IsFalse(info.Exists);
+                    }
+                    else
+                    {
+                        Assert.IsTrue(info.Exists);
+                        remainingSize += info.Length;
+                    }
+                }
+
+                Assert.IsTrue(remainingSize <= maxSize);
+            }
+            LogManager.Shutdown();
+        }
     }
 }

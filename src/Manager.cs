@@ -895,7 +895,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging
                     throw new InvalidOperationException($"logger {configuration.Name} already exists");
                 }
 
-                var logger = new FileBackedLogger(configuration);
+                var logger = new FileBackedLogger(configuration, DateTime.UtcNow);
                 this.fileLoggers[configuration.Name] = logger;
                 return logger.Logger;
             }

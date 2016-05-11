@@ -98,10 +98,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging
             this.logs = new HashSet<LogConfiguration>();
             foreach (var log in logs)
             {
-                if (!log.IsValid)
-                {
-                    throw new InvalidConfigurationException($"log {log.Name} is not valid.");
-                }
+                log.Validate();
                 if (log.Type == LogType.MemoryBuffer)
                 {
                     // TODO: enable named memory logs in LogManager.
@@ -369,10 +366,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging
 
                     clean &= ParseLogNode(log, config);
 
-                    if (!config.IsValid)
-                    {
-                        InternalLogger.Write.InvalidConfiguration($"log {log.Name} is not valid.");
-                    }
+                    config.Validate();
                     if (!logs.Add(config))
                     {
                         InternalLogger.Write.InvalidConfiguration($"duplicate log {log.Name} discarded.");

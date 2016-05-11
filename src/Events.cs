@@ -124,13 +124,14 @@ namespace Microsoft.Diagnostics.Tracing.Logging
             }
         }
 
-        [Event(11, Level = EventLevel.Informational)]
+        [Event(11, Level = EventLevel.Informational, Version = 2)]
         internal void CreateFileDestination(string baseFilename, string destinationDirectory, int rotationInterval,
-                                          string filenameTemplate)
+                                            string filenameTemplate, long maximumAgeSeconds, long maximumSizeBytes)
         {
             if (this.IsEnabled())
             {
-                this.WriteEvent(11, baseFilename, destinationDirectory, rotationInterval, filenameTemplate);
+                this.WriteEvent(11, baseFilename, destinationDirectory, rotationInterval, filenameTemplate, maximumAgeSeconds,
+                                maximumSizeBytes);
             }
         }
 
@@ -214,6 +215,24 @@ namespace Microsoft.Diagnostics.Tracing.Logging
             if (this.IsEnabled())
             {
                 WriteEvent(20, sessionName, newFilename, exceptionType, exceptionMessage);
+            }
+        }
+
+        [Event(21, Level = EventLevel.Warning)]
+        internal void UnableToCatalogLogFile(string filename, string exceptionType, string exceptionMessage)
+        {
+            if (this.IsEnabled())
+            {
+                this.WriteEvent(21, filename, exceptionType, exceptionMessage);
+            }
+        }
+
+        [Event(22, Level = EventLevel.Warning)]
+        internal void UnableToDeleteExpiredLogFile(string filename, string exceptionType, string exceptionMessage)
+        {
+            if (this.IsEnabled())
+            {
+                this.WriteEvent(22, filename, exceptionType, exceptionMessage);
             }
         }
     }

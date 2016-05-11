@@ -26,4 +26,6 @@ came from.
   of late-bound subscriptions to underlying logs. It is an error to use the `SubscribeToEvents`
   methods on loggers to add unresolved subscriptions (subscriptions can be verified using the
   `IsResolved` member).
+* Log retention polices have been added (see configuration documentation for usage restrictions)
+* Hostname and "milliseconds from midnight" formats must not have format specifiers.  
 
