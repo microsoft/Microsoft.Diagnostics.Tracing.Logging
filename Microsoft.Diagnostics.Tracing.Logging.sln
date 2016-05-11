@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio 14
-VisualStudioVersion = 14.0.22823.1
+VisualStudioVersion = 14.0.24720.0
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Microsoft.Diagnostics.Tracing.Logging", "src\Microsoft.Diagnostics.Tracing.Logging.csproj", "{0419B302-41CD-4653-B22C-5D339292566B}"
 EndProject
@@ -15,7 +15,9 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Stress", "utils\stress\Stre
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{BEF66177-9AFC-4A8D-9AF7-7E025EDC6709}"
 	ProjectSection(SolutionItems) = preProject
+		CHANGES.md = CHANGES.md
 		doc\configuration.md = doc\configuration.md
+		LICENSE = LICENSE
 		README.md = README.md
 	EndProjectSection
 EndProject

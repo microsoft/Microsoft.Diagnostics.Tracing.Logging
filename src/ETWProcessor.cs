@@ -287,7 +287,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.Reader
         /// <param name="ev">The event to inject.</param>
         protected void OnEvent(ETWEvent ev)
         {
-            this.EventProcessed(ev);
+            this.EventProcessed?.Invoke(ev);
         }
 
         /// <summary>

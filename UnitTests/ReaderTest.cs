@@ -32,6 +32,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
     using System.Threading.Tasks;
 
     using Microsoft.Diagnostics.Tracing.Logging.Reader;
+    using Microsoft.Diagnostics.Tracing.Parsers;
     using Microsoft.Diagnostics.Tracing.Session;
 
     using NUnit.Framework;
@@ -39,13 +40,17 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
     [TestFixture]
     public class ReaderTests
     {
-        private static void ValidateEventArgs(ETWEvent entry)
+        private string sessionName = null;
+        private int eventsRead = 0;
+
+        private void ValidateEventArgs(ETWEvent entry)
         {
-            if (entry.ProviderID != TestLogger.Write.Guid)
+            if (entry.ProviderID != TestLogger.Write.Guid || entry.ID == (ushort)DynamicTraceEventParser.ManifestEventID)
             {
                 return;
             }
 
+            ++this.eventsRead;
             switch (entry.ID)
             {
             case 1:
@@ -101,11 +106,11 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             TestLogger.Write.Element(0x86, 75309, "Jenny", 867.5309, true);
         }
 
-        private static string WriteTestFile(string logFilename)
+        private string WriteTestFile(string logFilename)
         {
             LogManager.Start();
-            LogManager.SetConfiguration(null);
-            LogManager.AllowEtwLogging = AllowEtwLoggingValues.Enabled;
+            LogManager.SetConfiguration((Configuration)null);
+            LogManager.Configuration.AllowEtwLogging = Configuration.AllowEtwLoggingValues.Enabled;
             string fullFilename = Path.Combine(LogManager.DefaultDirectory, logFilename);
             try
             {
@@ -113,16 +118,20 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             }
             catch (DirectoryNotFoundException) { }
 
-            string sessionName = Path.GetFileNameWithoutExtension(logFilename);
-            IEventLogger logger = LogManager.CreateETWLogger(sessionName, ".");
+            var sName = Path.GetFileNameWithoutExtension(logFilename);
+            var subs = new[] {new EventProviderSubscription(TestLogger.Write.Guid, EventLevel.Verbose)};
+            var config = new LogConfiguration(sName, LogType.EventTracing, subs)
+                         {Directory = "."};
+            IEventLogger logger = LogManager.CreateLogger<ETLFileLogger>(config);
             logger.SubscribeToEvents(TestLogger.Write.Guid, EventLevel.Verbose);
-            while (TraceEventSession.GetActiveSession(ETLFileLogger.SessionPrefix + sessionName) == null)
+            this.sessionName = ETLFileLogger.SessionPrefix + sName;
+            while (TraceEventSession.GetActiveSession(this.sessionName) == null)
             {
                 // Ensure session starts...
                 Thread.Sleep(100);
             }
             // Even after the session is listed it seemingly isn't "ready", periodic test failures seem to occur without
-            // an enforced pause here.
+            // an enforced pause here. This is awful and the author feels very bad about it. Sorry?
             Thread.Sleep(100);
             WriteTestEvents();
             LogManager.DestroyLogger(logger);
@@ -131,6 +140,14 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             Assert.IsTrue(File.Exists(fullFilename));
 
             return fullFilename;
+        }
+
+        private static void CheckElevated()
+        {
+            if (!LogManager.IsCurrentProcessElevated())
+            {
+                Assert.Inconclusive("Test process is not running elevated, cannot continue.");
+            }
         }
 
         private enum FakeSignedEnum
@@ -143,16 +160,35 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             FakeValue = 5309
         }
 
+        [SetUp]
+        public void SetUp()
+        {
+            this.sessionName = null;
+            this.eventsRead = 0;
+        }
+
+        [TearDown]
+        public void TearDown()
+        {
+            if (this.sessionName != null)
+            {
+                ETLFileLogger.CloseDuplicateTraceSession(this.sessionName);
+            }
+        }
+
         [Test]
         public void CanReadEventsFromRealtimeSession()
         {
-            using (var reader = new ETWRealtimeProcessor("testRealtimeSession"))
+            this.sessionName = "testRealtimeSession";
+            CheckElevated();
+
+            using (var reader = new ETWRealtimeProcessor(this.sessionName))
             {
                 reader.SubscribeToProvider(TestLogger.Write.Guid, EventLevel.Verbose);
                 reader.EventProcessed += delegate(ETWEvent entry)
                                          {
-                                             ValidateEventArgs(entry);
-                                             if (reader.Count == 4)
+                                             this.ValidateEventArgs(entry);
+                                             if (this.eventsRead == 4)
                                              {
                                                  reader.StopProcessing();
                                              }
@@ -162,7 +198,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
                 processorTask.Wait();
 
                 Assert.IsTrue(processorTask.IsCompleted);
-                Assert.AreEqual(4, reader.Count);
+                Assert.AreEqual(4, this.eventsRead);
                 Assert.AreEqual(0, reader.UnreadableEvents);
             }
         }
@@ -170,18 +206,21 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
         [Test]
         public void CanReadEventsWrittenToFile()
         {
+            CheckElevated();
+
             DateTime beforeStartTimestamp = DateTime.Now;
-            string fullFilename = WriteTestFile("testReader.etl");
+            string fullFilename = this.WriteTestFile("testReader.etl");
             DateTime afterEndTimestamp = DateTime.Now;
 
             var reader = new ETWFileProcessor(fullFilename);
-            reader.EventProcessed += ValidateEventArgs;
+            reader.EventProcessed += this.ValidateEventArgs;
             reader.Process();
-            Assert.AreEqual(4, reader.Count);
+            Assert.AreEqual(4, this.eventsRead);
 
+            this.eventsRead = 0;
             reader.ProcessEventTypes = EventTypes.All;
             reader.Process();
-            Assert.AreEqual(5, reader.Count); // We also get the kernel event at the head of the file
+            Assert.AreEqual(2 + this.eventsRead, reader.Count); // We also get the kernel event at the head of the file and a manifest
 
             Assert.IsTrue(beforeStartTimestamp <= reader.StartTime);
             Assert.IsTrue(afterEndTimestamp >= reader.EndTime);
@@ -190,23 +229,26 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
         [Test]
         public void CanReuseFileProcessorForNewFiles()
         {
+            CheckElevated();
+
             DateTime beforeStartTimestamp = DateTime.Now;
-            string firstFile = WriteTestFile("testMultipleFiles1.etl");
+            string firstFile = this.WriteTestFile("testMultipleFiles1.etl");
             DateTime afterFirstFileTimestamp = DateTime.Now;
 
             var reader = new ETWFileProcessor(firstFile);
-            reader.EventProcessed += ValidateEventArgs;
+            reader.EventProcessed += this.ValidateEventArgs;
             reader.Process();
-            Assert.AreEqual(4, reader.Count);
+            Assert.AreEqual(4, this.eventsRead);
             Assert.IsTrue(beforeStartTimestamp <= reader.StartTime);
             Assert.IsTrue(afterFirstFileTimestamp >= reader.EndTime);
 
-            string secondFile = WriteTestFile("testMultipleFiles2.etl");
+            this.eventsRead = 0;
+            string secondFile = this.WriteTestFile("testMultipleFiles2.etl");
             DateTime afterSecondFileTimestamp = DateTime.Now;
             reader.SetFile(secondFile);
             File.Delete(firstFile);
             reader.Process();
-            Assert.AreEqual(4, reader.Count);
+            Assert.AreEqual(4, this.eventsRead);
             Assert.IsTrue(afterFirstFileTimestamp <= reader.StartTime);
             Assert.IsTrue(afterSecondFileTimestamp >= reader.EndTime);
         }
@@ -233,10 +275,12 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
         [Test]
         public void CanSerializeAndDeserializeEventsProcessedInFiles()
         {
-            string fullFilename = WriteTestFile("testSerialize.etl");
+            CheckElevated();
+
+            string fullFilename = this.WriteTestFile("testSerialize.etl");
 
             var reader = new ETWFileProcessor(fullFilename);
-            reader.EventProcessed += ValidateEventArgs;
+            reader.EventProcessed += this.ValidateEventArgs;
             reader.EventProcessed +=
                 ev =>
                 {
@@ -264,30 +308,32 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
                     Assert.AreEqual(ev.ThreadID, jsonEv.ThreadID);
                     Assert.AreEqual(ev.ProcessID, jsonEv.ProcessID);
                     Assert.AreEqual(ev.Parameters.Count, jsonEv.Parameters.Count);
-                    ValidateEventArgs(ev);
+                    this.ValidateEventArgs(ev);
 
                     // When testing XML deserialize just check a couple fields to ensure data was copied correctly,
                     // if JSON serialization/deserialization worked we expect no hiccups here.
                     var xmlEv = xmlSerializer.ReadObject(new MemoryStream(Encoding.UTF8.GetBytes(xml))) as ETWEvent;
                     Assert.AreEqual(ev.ProviderID, xmlEv.ProviderID);
                     Assert.AreEqual(ev.ThreadID, xmlEv.ThreadID);
-                    ValidateEventArgs(ev);
+                    this.ValidateEventArgs(ev);
                 };
             reader.Process();
-            Assert.AreEqual(4, reader.Count);
+            Assert.AreEqual(12, this.eventsRead); // we validate three times per event.
         }
 
         [Test]
         public void ChangingETLFilenameCausesManifestToBeEmittedInNewFile()
         {
+            CheckElevated();
+
             const string prefix = "rotateFile";
             var files = new[] {prefix + "1.etl", prefix + "2.etl", prefix + "3.etl"};
             var resultFiles = new List<string>();
 
             LogManager.Start();
-            LogManager.SetConfiguration(null);
-            LogManager.AllowEtwLogging = AllowEtwLoggingValues.Enabled;
-            string sessionName = null;
+            LogManager.SetConfiguration((Configuration)null);
+            LogManager.Configuration.AllowEtwLogging = Configuration.AllowEtwLoggingValues.Enabled;
+            string currentSessionName = null;
             ETLFileLogger logger = null;
             foreach (var logFilename in files)
             {
@@ -298,15 +344,24 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
                 }
                 catch (DirectoryNotFoundException) { }
 
-                if (sessionName == null)
+                if (currentSessionName == null)
                 {
-                    sessionName = Path.GetFileNameWithoutExtension(logFilename);
+                    currentSessionName = Path.GetFileNameWithoutExtension(logFilename);
                 }
                 if (logger == null)
                 {
-                    logger = LogManager.CreateETWLogger(sessionName, ".") as ETLFileLogger;
+                    var logConfig = new LogConfiguration(currentSessionName, LogType.EventTracing,
+                                                         new[]
+                                                         {
+                                                             new EventProviderSubscription(TestLogger.Write,
+                                                                                           EventLevel.Verbose),
+                                                         })
+                                    {
+                                        Directory = "."
+                                    };
+                    logger = LogManager.CreateLogger<ETLFileLogger>(logConfig);
                     logger.SubscribeToEvents(TestLogger.Write.Guid, EventLevel.Verbose);
-                    while (TraceEventSession.GetActiveSession(ETLFileLogger.SessionPrefix + sessionName) == null)
+                    while (TraceEventSession.GetActiveSession(ETLFileLogger.SessionPrefix + currentSessionName) == null)
                     {
                         // Ensure session starts...
                         Thread.Sleep(100);
@@ -335,9 +390,8 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
                 // not preserved
                 using (var reader = new ETWFileProcessor(fullFilename))
                 {
-                    reader.EventProcessed += ValidateEventArgs;
+                    reader.EventProcessed += this.ValidateEventArgs;
                     reader.Process();
-                    Assert.AreEqual(4, reader.Count);
                 }
             }
         }
@@ -345,15 +399,17 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
         [Test]
         public void CreatingDuplicateRealtimeSessionTaskResultsInFaultedTaskIfSessionReclaimIsOff()
         {
-            const string duplicateSessionName = "testDuplicateRealtimeSession";
+            CheckElevated();
 
-            using (var reader1 = new ETWRealtimeProcessor(duplicateSessionName, true))
+            this.sessionName = "testDuplicateRealtimeSession";
+
+            using (var reader1 = new ETWRealtimeProcessor(this.sessionName, true))
             {
                 reader1.SubscribeToProvider(TestLogger.Write.Guid, EventLevel.Verbose);
                 var t1 = reader1.CreateProcessingTask();
                 Assert.AreEqual(TaskStatus.Running, t1.Status);
 
-                using (var reader2 = new ETWRealtimeProcessor(duplicateSessionName, false))
+                using (var reader2 = new ETWRealtimeProcessor(this.sessionName, false))
                 {
                     reader2.SubscribeToProvider(TestLogger.Write.Guid, EventLevel.Verbose);
                     try

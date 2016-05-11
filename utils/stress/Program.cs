@@ -51,7 +51,7 @@ namespace Stress
         private static void Main(string[] argv)
         {
             // listen for info+ events
-            IEventLogger cons = LogManager.ConsoleLogger;
+            IEventLogger cons = LogManager.GetLogger(null, LogType.Console);
             cons.SubscribeToEvents(Spammer.Log, EventLevel.Informational);
 
             if (!ProcessCommandLine(argv))
@@ -120,22 +120,31 @@ namespace Stress
 
                     IEventLogger logger = null;
                     MemoryLogger mem = null;
+                    var subs = new[] {new EventProviderSubscription(Spammer.Log, EventLevel.Verbose),};
                     switch (t)
                     {
                     case memoryType:
-                        logger = mem = LogManager.CreateMemoryLogger();
+                        logger =
+                            mem =
+                            LogManager.CreateLogger(new LogConfiguration(null, LogType.MemoryBuffer, subs)) as
+                            MemoryLogger;
                         break;
                     case textFileType:
-                        logger = LogManager.CreateTextLogger(textFileType, LogManager.DefaultDirectory, bufferSize,
-                                                             fileRotation);
+                        logger = LogManager.CreateLogger(new LogConfiguration(textFileType, LogType.Text, subs)
+                                                         {
+                                                             BufferSizeMB = bufferSize,
+                                                             RotationInterval = fileRotation,
+                                                         });
                         break;
                     case etlFileType:
-                        logger = LogManager.CreateETWLogger(etlFileType, LogManager.DefaultDirectory, bufferSize,
-                                                            fileRotation);
+                        logger = LogManager.CreateLogger(new LogConfiguration(textFileType, LogType.EventTracing, subs)
+                                                         {
+                                                             BufferSizeMB = bufferSize,
+                                                             RotationInterval = fileRotation,
+                                                         });
                         break;
                     }
 
-                    logger.SubscribeToEvents(Spammer.Log, EventLevel.Verbose);
                     Thread.Sleep(500); // for ETL files subscription takes a little bit to hit the kernel
                     success = RunEvents(t, eps, messageSize);
                     if (mem != null)

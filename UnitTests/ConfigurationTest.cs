@@ -1,6 +1,6 @@
 ﻿// The MIT License (MIT)
 // 
-// Copyright (c) 2015 Microsoft
+// Copyright (c) 2015-2016 Microsoft
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -22,11 +22,16 @@
 
 namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
 {
+    using System;
+    using System.Collections.Generic;
     using System.Diagnostics.Tracing;
     using System.IO;
+    using System.Linq;
     using System.Threading;
 
     using Microsoft.Diagnostics.Tracing.Session;
+
+    using Newtonsoft.Json;
 
     using NUnit.Framework;
 
@@ -42,6 +47,159 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             }
         }
 
+        private static IEnumerable<Configuration> SerializedConfigurations
+        {
+            get
+            {
+                var consoleLog = new LogConfiguration(null, LogType.Console, LogManager.DefaultSubscriptions);
+                var fileLog = new LogConfiguration("somefile", LogType.Text, new[]
+                                                                             {
+                                                                                 new EventProviderSubscription(
+                                                                                     InternalLogger.Write,
+                                                                                     EventLevel.Verbose, 0xdeadbeef),
+                                                                             });
+                foreach (var value in Enum.GetValues(typeof(Configuration.AllowEtwLoggingValues)))
+                {
+                    var config = new Configuration(new[] {consoleLog, fileLog});
+                    config.AllowEtwLogging = (Configuration.AllowEtwLoggingValues)value;
+                    yield return config;
+                }
+            }
+        }
+
+        [Test, TestCaseSource(nameof(SerializedConfigurations))]
+        public void CanSerialize(Configuration configuration)
+        {
+            var serializer = new JsonSerializer();
+            var json = configuration.ToString(); // ToString returns the JSON representation itself.
+            using (var reader = new StringReader(json))
+            {
+                using (var jsonReader = new JsonTextReader(reader))
+                {
+                    var deserialized = serializer.Deserialize<Configuration>(jsonReader);
+                    Assert.AreEqual(configuration.AllowEtwLogging, deserialized.AllowEtwLogging);
+                    Assert.AreEqual(configuration.Logs.Count(), deserialized.Logs.Count());
+                    foreach (var log in configuration.Logs)
+                    {
+                        Assert.IsTrue(deserialized.Logs.Contains(log));
+                    }
+                }
+            }
+        }
+
+        [Test]
+        public void ConstructorValidation()
+        {
+            var validLogConfigs = new[] {new LogConfiguration(null, LogType.Console, LogManager.DefaultSubscriptions),};
+
+            foreach (var value in Enum.GetValues(typeof(Configuration.AllowEtwLoggingValues)))
+            {
+                var validValue = (Configuration.AllowEtwLoggingValues)value;
+                Assert.DoesNotThrow(() => new Configuration(validLogConfigs, validValue));
+            }
+            var invalidAllowValue =
+                (Configuration.AllowEtwLoggingValues)((int)Configuration.AllowEtwLoggingValues.Enabled + 8675309);
+            Assert.Throws<ArgumentOutOfRangeException>(() => new Configuration(validLogConfigs, invalidAllowValue));
+
+            Assert.Throws<ArgumentNullException>(() => new Configuration(null));
+            Assert.Throws<ArgumentException>(() => new Configuration(new LogConfiguration[0]));
+
+            var invalidConfig = new LogConfiguration("foo", LogType.Network, LogManager.DefaultSubscriptions);
+            Assert.Throws<InvalidConfigurationException>(() => invalidConfig.Validate());
+            var invalidLogConfigs = new List<LogConfiguration>(validLogConfigs);
+            invalidLogConfigs.Add(invalidConfig);
+            Assert.Throws<InvalidConfigurationException>(() => new Configuration(invalidLogConfigs));
+
+            var duplicateLogConfigs = new List<LogConfiguration>(validLogConfigs);
+            duplicateLogConfigs.AddRange(validLogConfigs);
+            Assert.Throws<InvalidConfigurationException>(() => new Configuration(duplicateLogConfigs));
+
+            var memoryLogs = new[]
+                             {new LogConfiguration("memory", LogType.MemoryBuffer, LogManager.DefaultSubscriptions),};
+            Assert.Throws<InvalidConfigurationException>(() => new Configuration(memoryLogs));
+        }
+
+        [Test]
+        public void MergeCombinesLogsAndSettings()
+        {
+            var leftLogConfig = new[]
+                                {
+                                    new LogConfiguration("left", LogType.Text, LogManager.DefaultSubscriptions),
+                                    new LogConfiguration("middle", LogType.EventTracing, LogManager.DefaultSubscriptions),
+                                };
+            var leftConfig = new Configuration(leftLogConfig, Configuration.AllowEtwLoggingValues.None);
+
+            var rightLogConfig = new[]
+                                 {
+                                     new LogConfiguration("middle", LogType.Text,
+                                                          LogManager.DefaultSubscriptions),
+                                     new LogConfiguration("right", LogType.Network, LogManager.DefaultSubscriptions)
+                                     {Hostname = "foo", Port = 5309},
+                                 };
+            var rightConfig = new Configuration(rightLogConfig, Configuration.AllowEtwLoggingValues.Enabled);
+
+            leftConfig.Merge(rightConfig);
+            Assert.AreEqual(rightConfig.AllowEtwLogging, leftConfig.AllowEtwLogging);
+            Assert.AreEqual(3, leftConfig.Logs.Count());
+            foreach (var log in leftConfig.Logs)
+            {
+                if (log.Name == "left")
+                {
+                    Assert.AreEqual(LogType.Text, log.Type);
+                }
+                else if (log.Name == "middle")
+                {
+                    Assert.AreEqual(LogType.Text, log.Type);
+                }
+                else if (log.Name == "right")
+                {
+                    Assert.AreEqual(LogType.Network, log.Type);
+                }
+                else
+                {
+                    Assert.Fail("Unexpected log encountered.");
+                }
+            }
+        }
+
+        [Test]
+        public void MergeDisablingEtwLoggingModifiesExistingLogs()
+        {
+            var leftLogConfig = new[]
+                                {
+                                    new LogConfiguration("left", LogType.EventTracing, LogManager.DefaultSubscriptions),
+                                };
+            var leftConfig = new Configuration(leftLogConfig, Configuration.AllowEtwLoggingValues.None);
+
+            var rightLogConfig = new[]
+                                 {
+                                     new LogConfiguration("right", LogType.Network, LogManager.DefaultSubscriptions)
+                                     {Hostname = "foo", Port = 5309},
+                                 };
+            var rightConfig = new Configuration(rightLogConfig, Configuration.AllowEtwLoggingValues.Disabled);
+
+            leftConfig.Merge(rightConfig);
+            Assert.AreEqual(rightConfig.AllowEtwLogging, leftConfig.AllowEtwLogging);
+            Assert.AreEqual(2, leftConfig.Logs.Count());
+            var etwLog = leftConfig.Logs.First(l => l.Name == "left");
+            Assert.AreEqual(LogType.Text, etwLog.Type);
+        }
+
+        [Test]
+        public void ClearRemovesLogsButNotSettings()
+        {
+            var config =
+                new Configuration(new[] {new LogConfiguration(null, LogType.Console, LogManager.DefaultSubscriptions),},
+                                  Configuration.AllowEtwLoggingValues.Enabled);
+            Assert.AreNotEqual(0, config.Logs.Count());
+            Assert.AreEqual(Configuration.AllowEtwLoggingValues.Enabled, config.AllowEtwLogging);
+            config.Clear();
+            Assert.AreEqual(0, config.Logs.Count());
+            Assert.AreEqual(Configuration.AllowEtwLoggingValues.Enabled, config.AllowEtwLogging);
+        }
+
+        #region legacy XML tests
+#pragma warning disable 618
         [Test]
         public void CompoundConfiguration()
         {
@@ -50,7 +208,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
 <loggers>
   <etwlogging enabled=""true"" />
   <log name=""configFileLogger"" type=""text"">
-    <source name=""Microsoft.Diagnostics.Tracing.Logging"" />
+    <source name=""Microsoft-Diagnostics-Tracing-Logging"" />
   </log>
 </loggers>";
             LogManager.Start();
@@ -68,7 +226,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             Assert.IsTrue(LogManager.SetConfigurationFile(configFile));
             Assert.IsTrue(LogManager.SetConfiguration(config.Replace("text", "etw")));
             Assert.AreEqual(1, LogManager.singleton.fileLoggers.Count);
-            Assert.IsNotNull(LogManager.GetFileLogger("configFileLogger") as ETLFileLogger);
+            Assert.IsNotNull(LogManager.GetLogger<ETLFileLogger>("configFileLogger"));
 
             LogManager.Shutdown();
         }
@@ -80,11 +238,11 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             const string config = @"
 <loggers>
   <log name=""configFileLogger"" type=""text"">
-    <source name=""Microsoft.Diagnostics.Tracing.Logging"" />
+    <source name=""Microsoft-Diagnostics-Tracing-Logging"" />
   </log>
 </loggers>";
             LogManager.Start();
-            LogManager.SetConfiguration(null); // wipe any config
+            LogManager.SetConfiguration((string)null); // wipe any config
             Assert.AreEqual(0, LogManager.singleton.fileLoggers.Count);
 
             File.Delete(configFile);
@@ -105,7 +263,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
 
             Assert.IsTrue(LogManager.SetConfigurationFile(configFile));
             Assert.AreEqual(1, LogManager.singleton.fileLoggers.Count);
-            Assert.IsNotNull(LogManager.GetFileLogger("configFileLogger"));
+            Assert.IsNotNull(LogManager.GetLogger<TextFileLogger>("configFileLogger"));
             long currentReadCount = LogManager.singleton.configurationFileReloadCount;
 
             using (var file = new FileStream(configFile, FileMode.Create))
@@ -128,8 +286,8 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             }
             Assert.AreEqual(LogManager.singleton.configurationFileReloadCount, currentReadCount);
             Assert.AreEqual(1, LogManager.singleton.fileLoggers.Count);
-            Assert.IsNull(LogManager.GetFileLogger("configFileLogger"));
-            Assert.IsNotNull(LogManager.GetFileLogger("configFileLogger2"));
+            Assert.IsNull(LogManager.GetLogger("configFileLogger", LogType.Text));
+            Assert.IsNotNull(LogManager.GetLogger("configFileLogger2", LogType.Text));
 
             LogManager.Shutdown();
         }
@@ -144,12 +302,12 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
   </log>
 </loggers>";
 
-            LogManager.AllowEtwLogging = AllowEtwLoggingValues.Enabled;
+            LogManager.Configuration.AllowEtwLogging = Configuration.AllowEtwLoggingValues.Enabled;
             LogManager.Start();
             Assert.IsTrue(LogManager.SetConfiguration(config));
             Assert.AreEqual(1, LogManager.singleton.fileLoggers.Count);
 
-            var theLogger = LogManager.GetFileLogger("etwLogger") as ETLFileLogger;
+            var theLogger = LogManager.GetLogger("etwLogger", LogType.EventTracing) as ETLFileLogger;
             Assert.IsNotNull(theLogger);
             string filename = Path.GetFileName(theLogger.Filename);
             Assert.AreEqual(filename, "etwLogger.etl");
@@ -157,7 +315,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             var session = new TraceEventSession(ETLFileLogger.SessionPrefix + "etwLogger",
                                                 TraceEventSessionOptions.Attach);
             Assert.IsNotNull(session);
-            Assert.AreEqual(LogManager.DefaultFileBufferSizeMB, session.BufferSizeMB);
+            Assert.AreEqual(LogManager.DefaultLogBufferSizeMB, session.BufferSizeMB);
             session.Dispose();
             LogManager.Shutdown();
         }
@@ -168,7 +326,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             const string config = @"
 <loggers>
   <log name=""subTextLogger"" directory=""undercity"">
-    <source name=""Microsoft.Diagnostics.Tracing.Logging"" />
+    <source name=""Microsoft-Diagnostics-Tracing-Logging"" />
   </log>
 </loggers>";
 
@@ -176,7 +334,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             Assert.IsTrue(LogManager.SetConfiguration(config));
             Assert.AreEqual(1, LogManager.singleton.fileLoggers.Count);
 
-            var theLogger = LogManager.GetFileLogger("subtextLogger") as TextFileLogger;
+            var theLogger = LogManager.GetLogger("subtextLogger", LogType.Text) as TextFileLogger;
             Assert.IsNotNull(theLogger);
             string filename = Path.GetFileName(theLogger.Filename);
             Assert.AreEqual(filename, "subTextLogger.log");
@@ -191,7 +349,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             const string config = @"
 <loggers>
   <log name=""textLogger"">
-    <source name=""Microsoft.Diagnostics.Tracing.Logging"" />
+    <source name=""Microsoft-Diagnostics-Tracing-Logging"" />
   </log>
 </loggers>";
 
@@ -199,7 +357,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             Assert.IsTrue(LogManager.SetConfiguration(config));
             Assert.AreEqual(1, LogManager.singleton.fileLoggers.Count);
 
-            var theLogger = LogManager.GetFileLogger("textLogger") as TextFileLogger;
+            var theLogger = LogManager.GetLogger<TextFileLogger>("textLogger");
             Assert.IsNotNull(theLogger);
             string dirname = Path.GetDirectoryName(theLogger.Filename);
             Assert.AreEqual(dirname, LogManager.DefaultDirectory);
@@ -222,7 +380,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
   </log>
 </loggers>"));
 
-            Assert.IsNotNull(LogManager.GetFileLogger("filtered"));
+            Assert.IsNotNull(LogManager.GetLogger<TextFileLogger>("filtered"));
             for (int i = 0; i < 42; ++i)
             {
                 TestLogger.Write.String((i % 2 == 1 ? "Oddball" : "Moneyball"));
@@ -240,16 +398,18 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             Assert.IsTrue(LogManager.SetConfiguration(
                                                       @"<loggers>
 <etwlogging enabled=""true"" />
+<log name=""somelog""><source name=""Microsoft-Diagnostics-Tracing-Logging"" /></log>
 </loggers>"));
-            Assert.AreEqual(AllowEtwLoggingValues.Enabled, LogManager.AllowEtwLogging);
+            Assert.AreEqual(Configuration.AllowEtwLoggingValues.Enabled, LogManager.Configuration.AllowEtwLogging);
 
             LogManager.Shutdown();
             LogManager.Start();
             Assert.IsTrue(LogManager.SetConfiguration(
                                                       @"<loggers>
 <etwlogging enabled=""False"" />
+<log name=""somelog""><source name=""Microsoft-Diagnostics-Tracing-Logging"" /></log>
 </loggers>"));
-            Assert.AreEqual(AllowEtwLoggingValues.Disabled, LogManager.AllowEtwLogging);
+            Assert.AreEqual(Configuration.AllowEtwLoggingValues.Disabled, LogManager.Configuration.AllowEtwLogging);
             LogManager.Shutdown();
         }
 
@@ -266,7 +426,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
   </log>
 </loggers>"));
 
-            Assert.IsNotNull(LogManager.GetFileLogger("latestart"));
+            Assert.IsNotNull(LogManager.GetLogger<TextFileLogger>("latestart"));
             var writer = new LateInstantiationLogger();
             for (int i = 0; i < 42; ++i)
             {
@@ -283,19 +443,19 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             const string config = @"
 <loggers>
   <log name=""testLogger"" type=""text"">
-    <source name=""Microsoft.Diagnostics.Tracing.Logging"" />
+    <source name=""Microsoft-Diagnostics-Tracing-Logging"" />
   </log>
 </loggers>";
-            LogManager.AllowEtwLogging = AllowEtwLoggingValues.Enabled;
+            LogManager.Configuration.AllowEtwLogging = Configuration.AllowEtwLoggingValues.Enabled;
             LogManager.Start();
             Assert.IsTrue(LogManager.SetConfiguration(config));
-            Assert.IsNotNull(LogManager.GetFileLogger("testLogger") as TextFileLogger);
+            Assert.IsNotNull(LogManager.GetLogger<TextFileLogger>("testLogger"));
 
             Assert.IsTrue(LogManager.SetConfiguration(config.Replace("text", "etl")));
-            Assert.IsNotNull(LogManager.GetFileLogger("testLogger") as ETLFileLogger);
+            Assert.IsNotNull(LogManager.GetLogger<ETLFileLogger>("testLogger"));
 
             Assert.IsTrue(LogManager.SetConfiguration(""));
-            Assert.IsNull(LogManager.GetFileLogger("testLogger"));
+            Assert.IsNull(LogManager.GetLogger<TextFileLogger>("testLogger"));
             Assert.AreEqual(0, LogManager.singleton.fileLoggers.Count);
             LogManager.Shutdown();
         }
@@ -309,9 +469,8 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             Assert.IsTrue(LogManager.IsConfigurationValid(null));
             Assert.IsTrue(LogManager.IsConfigurationValid(""));
 
-            // basic strings (it's okay to have no loggers but you still need to be valid XML!)
+            // basic strings nonsense.
             Assert.IsFalse(LogManager.IsConfigurationValid("can haz xml?"));
-            Assert.IsTrue(LogManager.IsConfigurationValid("<loggers />"));
 
             // Every log must have at least one source, but it need not exist at time of config parse.
             Assert.IsFalse(LogManager.IsConfigurationValid("<loggers><log name=\"nosource\" /></loggers>"));
@@ -320,24 +479,24 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
                                                           "<loggers><log name=\"hazsource\"><source name=\"SomeRandomSource\" /></log></loggers>"));
             Assert.IsTrue(
                           LogManager.IsConfigurationValid(
-                                                          "<loggers><log name=\"hazsource\"><source name=\"Microsoft.Diagnostics.Tracing.Logging\" /></log></loggers>"));
+                                                          "<loggers><log name=\"hazsource\"><source name=\"Microsoft-Diagnostics-Tracing-Logging\" /></log></loggers>"));
 
             // Log types need to be valid.
             Assert.IsFalse(
                            LogManager.IsConfigurationValid(
-                                                           "<loggers><log name=\"typed\" type=\"foo\"><source name=\"Microsoft.Diagnostics.Tracing.Logging\" /></log></loggers>"));
+                                                           "<loggers><log name=\"typed\" type=\"foo\"><source name=\"Microsoft-Diagnostics-Tracing-Logging\" /></log></loggers>"));
             Assert.IsTrue(
                           LogManager.IsConfigurationValid(
-                                                          "<loggers><log name=\"typed\" type=\"etl\"><source name=\"Microsoft.Diagnostics.Tracing.Logging\" /></log></loggers>"));
+                                                          "<loggers><log name=\"typed\" type=\"etl\"><source name=\"Microsoft-Diagnostics-Tracing-Logging\" /></log></loggers>"));
             Assert.IsTrue(
                           LogManager.IsConfigurationValid(
-                                                          "<loggers><log name=\"typed\" type=\"etw\"><source name=\"Microsoft.Diagnostics.Tracing.Logging\" /></log></loggers>"));
+                                                          "<loggers><log name=\"typed\" type=\"etw\"><source name=\"Microsoft-Diagnostics-Tracing-Logging\" /></log></loggers>"));
             Assert.IsTrue(
                           LogManager.IsConfigurationValid(
-                                                          "<loggers><log name=\"typed\" type=\"text\"><source name=\"Microsoft.Diagnostics.Tracing.Logging\" /></log></loggers>"));
+                                                          "<loggers><log name=\"typed\" type=\"text\"><source name=\"Microsoft-Diagnostics-Tracing-Logging\" /></log></loggers>"));
             Assert.IsTrue(
                           LogManager.IsConfigurationValid(
-                                                          "<loggers><log name=\"typed\" type=\"txt\"><source name=\"Microsoft.Diagnostics.Tracing.Logging\" /></log></loggers>"));
+                                                          "<loggers><log name=\"typed\" type=\"txt\"><source name=\"Microsoft-Diagnostics-Tracing-Logging\" /></log></loggers>"));
 
             // All log names need to be valid filenames
             Assert.IsFalse(
@@ -391,9 +550,9 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
             Assert.IsFalse(
                            LogManager.IsConfigurationValid(
                                                            "<loggers><log name=\"rotation\" rotationInterval=\"8675309\"><source name=\"Microsoft.Diagnostics.Tracing.logging\" /></log></loggers>"));
-            Assert.IsFalse(
-                           LogManager.IsConfigurationValid(
-                                                           "<loggers><log name=\"rotation\" rotationInterval=\"-60\"><source name=\"Microsoft.Diagnostics.Tracing.logging\" /></log></loggers>"));
+            Assert.IsTrue(
+                          LogManager.IsConfigurationValid(
+                                                          "<loggers><log name=\"rotation\" rotationInterval=\"-60\"><source name=\"Microsoft.Diagnostics.Tracing.logging\" /></log></loggers>"));
             Assert.IsTrue(
                           LogManager.IsConfigurationValid(
                                                           "<loggers><log name=\"rotation\" rotationInterval=\"60\"><source name=\"Microsoft.Diagnostics.Tracing.logging\" /></log></loggers>"));
@@ -506,5 +665,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging.UnitTests
                                                            "<loggers><log name=\"hazfilter\" type=\"etw\"><source name=\"Microsoft.Diagnostics.Tracing.logging\"/><filter>hello</filter></log></loggers>"));
             LogManager.Shutdown();
         }
+#pragma warning restore 618
+        #endregion
     }
 }

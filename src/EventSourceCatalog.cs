@@ -146,10 +146,7 @@ namespace Microsoft.Diagnostics.Tracing.Logging
             public string Name { get; private set; }
             public EventSource Source { get; }
 
-            public EventInfo this[int eventID]
-            {
-                get { return this.eventIDs[eventID]; }
-            }
+            public EventInfo this[int eventID] => this.eventIDs[eventID];
         }
 
         internal static EventSourceInfo GetEventSourceInfo(EventSource source)
@@ -228,36 +225,9 @@ namespace Microsoft.Diagnostics.Tracing.Logging
             }
             lock (this.loggersLock)
             {
-                if (this.logConfigurations != null)
+                foreach (var log in Configuration.Logs)
                 {
-                    foreach (var kvp in this.logConfigurations)
-                    {
-                        LogConfiguration config = kvp.Value;
-                        // We need to update our loggers any time a config shows up where they had a dependency
-                        // that probably wasn't resolved. This will be the case either when it was a named source
-                        // or it was a GUID source on a type that can't directly subscribe to GUIDs (i.e. not an ETW
-                        // trace session)
-                        IEventLogger logger = null;
-                        switch (config.FileType)
-                        {
-                        case LoggerType.Console:
-                            logger = this.consoleLogger;
-                            break;
-                        case LoggerType.Network:
-                            logger = this.GetNamedNetworkLogger(kvp.Key);
-                            break;
-                        default:
-                            logger = this.GetNamedFileLogger(kvp.Key).Logger;
-                            break;
-                        }
-                        LogSourceLevels levels;
-                        if (config.NamedSources.TryGetValue(eventSource.Name, out levels) ||
-                            (!config.HasFeature(LogConfiguration.Features.GuidSubscription) &&
-                             config.GuidSources.TryGetValue(eventSource.Guid, out levels)))
-                        {
-                            ApplyConfigForEventSource(config, logger, eventSource, levels);
-                        }
-                    }
+                    log.UpdateForEventSource(eventSource);
                 }
             }
         }

@@ -64,20 +64,27 @@ namespace ETWRotationDemo
             }
             Console.WriteLine("Writing logs in {0}", dir);
 
-            var config = string.Format(
-                                       @"
-<loggers>
-  <etwlogging enabled='true' />
-  <log name='demo' rotationInterval='60' type='etl' directory='{0}' timestampLocal='true'>
-    <source name='Demo' minimumSeverity='informational' />
-  </log>
-</loggers>
-", dir);
-
             LogManager.Start();
-            LogAssert.Assert(LogManager.SetConfiguration(config));
-            LogManager.ConsoleLogger.SubscribeToEvents(DemoEvents.Write, EventLevel.Verbose);
-            LogManager.ConsoleLogger.SubscribeToEvents(InternalLogger.Write, EventLevel.Verbose);
+            var demoLog = new LogConfiguration("demo", LogType.EventTracing,
+                                               new[]
+                                               {
+                                                   new EventProviderSubscription(DemoEvents.Write,
+                                                                                 EventLevel.Informational)
+                                               })
+                          {
+                              Directory = dir,
+                              TimestampLocal = true,
+                              RotationInterval = 60
+                          };
+            var consoleLog = new LogConfiguration(null, LogType.Console,
+                                                  new[]
+                                                  {
+                                                      new EventProviderSubscription(DemoEvents.Write, EventLevel.Verbose),
+                                                      new EventProviderSubscription(InternalLogger.Write,
+                                                                                    EventLevel.Verbose)
+                                                  });
+            var configuration = new Configuration(new[] {demoLog, consoleLog}, Configuration.AllowEtwLoggingValues.Enabled);
+            LogManager.SetConfiguration(configuration);
 
             var t = new Timer(_ => DemoEvents.Write.Log(DateTime.Now.ToString()), null, TimeSpan.Zero,
                               new TimeSpan(0, 0, 1));
